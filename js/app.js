@@ -1155,6 +1155,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
         <p>${esc(t('appTagline'))}</p>
       </div>
       ${searchBar('', false)}
+      ${allergyCard()}
       <section class="camera-card" aria-labelledby="cam-h">
         <span class="cam-ico" aria-hidden="true">${icon('camera')}</span>
         <h2 id="cam-h">${esc(t('takePhoto'))}</h2>
@@ -1164,7 +1165,6 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
           <button type="button" class="btn btn-glass" data-action="photo" data-gallery="1">${icon('image')}<span>${esc(t('fromGallery'))}</span></button>
         </div>
       </section>
-      ${allergyCard()}
       ${demoNotice()}
       <div class="quick-grid">
         <a class="quick" href="#/interactions">

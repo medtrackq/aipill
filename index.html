@@ -3,39 +3,29 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <meta name="theme-color" content="#3d5a1e">
-  <meta name="description" content="ตรวจสอบยาด้วย AI: ระบุเม็ดยา สแกนบาร์โค้ด/ซองยา ค้นหาด้วยชื่อหรือเสียง และตรวจสอบยาตีกัน">
+  <meta name="theme-color" content="#f3f6f5">
+  <meta name="description" content="ตรวจสอบยาด้วย AI: ถ่ายรูปยา พิมพ์หรือพูดชื่อยา และตรวจสอบยาตีกัน">
   <title>ตรวจสอบยา · AI Pill</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@500;600;700&family=IBM+Plex+Sans+Thai+Looped:wght@400;500;600&display=swap">
   <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
   <a class="skip-link" href="#app" data-i18n="skipToContent">ข้ามไปยังเนื้อหาหลัก</a>
 
-  <header class="topbar">
-    <div class="topbar-inner">
+  <header class="appbar">
+    <div class="appbar-inner">
       <a href="#/" class="brand">
-        <span class="brand-logo" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m10.5 20.5 10-10a4.95 4.95 0 1 0-7-7l-10 10a4.95 4.95 0 1 0 7 7Z"/><path d="m8.5 8.5 7 7"/></svg>
-        </span>
+        <span class="brand-logo" data-icon="pill" aria-hidden="true"></span>
         <span class="brand-name" data-i18n="appName">ตรวจสอบยา</span>
       </a>
-      <div class="a11y-tools" role="group" aria-label="ขนาดตัวอักษร" data-i18n-aria="textSize">
-        <button type="button" class="tool-btn" id="btn-font-down" aria-label="ลดขนาดตัวอักษร" data-i18n-aria="smaller"><span data-i18n="smallerShort">ก−</span></button>
-        <button type="button" class="tool-btn" id="btn-font-up" aria-label="เพิ่มขนาดตัวอักษร" data-i18n-aria="larger"><span data-i18n="largerShort">ก+</span></button>
-        <button type="button" class="tool-btn" id="btn-contrast" aria-pressed="false" aria-label="คอนทราสต์สูง" data-i18n-aria="contrast">
-          <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2.5"/><path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor"/></svg>
+      <div class="appbar-actions">
+        <button type="button" class="icon-btn" id="btn-display" aria-label="การแสดงผล" data-i18n-aria="display">
+          <span class="aa" aria-hidden="true">Aa</span>
         </button>
-        <label class="sr-only" for="lang-select" data-i18n="language">ภาษา</label>
-        <select id="lang-select" class="tool-select">
-          <option value="th">ไทย</option>
-          <option value="en">EN</option>
-          <option value="zh">中文</option>
-        </select>
-        <button type="button" class="tool-btn" id="btn-settings" aria-label="ตั้งค่า" data-i18n-aria="settings">
-          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
+        <button type="button" class="icon-btn" id="btn-settings" aria-label="ตั้งค่า" data-i18n-aria="settings">
+          <span data-icon="gear" aria-hidden="true"></span>
         </button>
       </div>
     </div>
@@ -47,24 +37,59 @@
     <p data-i18n="footerDisclaimer">ข้อมูลในแอปนี้ใช้ประกอบการตัดสินใจเบื้องต้นเท่านั้น ไม่ใช้แทนคำวินิจฉัยของแพทย์หรือเภสัชกร</p>
   </footer>
 
+  <nav class="tabbar" aria-label="เมนูหลัก" data-i18n-aria="mainMenu">
+    <div class="tabbar-inner">
+      <a href="#/" class="tab" data-tab="home"><span class="tab-ico" data-icon="home" aria-hidden="true"></span><span class="tab-label" data-i18n="home">หน้าแรก</span></a>
+      <a href="#/search" class="tab" data-tab="search"><span class="tab-ico" data-icon="search" aria-hidden="true"></span><span class="tab-label" data-i18n="tabSearch">ค้นหา</span></a>
+      <button type="button" class="tab-fab" id="btn-fab-camera" aria-label="ถ่ายรูปยา" data-i18n-aria="takePhoto"><span data-icon="camera" aria-hidden="true"></span></button>
+      <a href="#/interactions" class="tab" data-tab="interactions"><span class="tab-ico" data-icon="layers" aria-hidden="true"></span><span class="tab-label" data-i18n="tabIx">ยาตีกัน</span></a>
+      <button type="button" class="tab" id="btn-tab-help" data-tab="help"><span class="tab-ico" data-icon="lifebuoy" aria-hidden="true"></span><span class="tab-label" data-i18n="tabHelp">ช่วยเหลือ</span></button>
+    </div>
+  </nav>
+
   <!-- hidden inputs for photos -->
   <input type="file" id="file-camera" accept="image/*" capture="environment" class="sr-only" tabindex="-1" aria-hidden="true">
   <input type="file" id="file-gallery" accept="image/*" class="sr-only" tabindex="-1" aria-hidden="true">
 
-  <!-- loading overlay -->
+  <!-- waiting overlay -->
   <div class="overlay" id="overlay" hidden>
     <div class="overlay-box" role="status" aria-live="assertive">
       <div class="spinner" aria-hidden="true"></div>
       <p class="overlay-title" id="overlay-title"></p>
       <p class="overlay-sub" id="overlay-sub"></p>
       <p class="overlay-sub" id="overlay-elapsed" aria-hidden="true"></p>
-      <button type="button" class="btn btn-secondary btn-block" id="btn-cancel-ai" style="margin-top:1.25rem" data-i18n="cancel">ยกเลิก</button>
+      <button type="button" class="btn btn-secondary btn-block" id="btn-cancel-ai" data-i18n="cancel">ยกเลิก</button>
     </div>
   </div>
 
-  <!-- settings dialog -->
+  <!-- display sheet: text size, contrast, language -->
+  <dialog id="dlg-display" class="sheet" aria-labelledby="display-title">
+    <form method="dialog" class="sheet-body">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <h2 id="display-title" data-i18n="display">การแสดงผล</h2>
+      <p class="field-label" id="size-label" data-i18n="textSize">ขนาดตัวอักษร</p>
+      <div class="seg seg-size" role="group" aria-labelledby="size-label" id="size-options"></div>
+      <div class="setting-row">
+        <div>
+          <p class="setting-title" id="contrast-label" data-i18n="contrast">คอนทราสต์สูง</p>
+          <p class="help" data-i18n="contrastSub">พื้นดำ ตัวอักษรขาว/เหลือง มองเห็นชัดขึ้น</p>
+        </div>
+        <button type="button" class="switch" id="btn-contrast" role="switch" aria-checked="false" aria-labelledby="contrast-label"><span class="switch-knob"></span></button>
+      </div>
+      <p class="field-label" id="lang-label" data-i18n="language">ภาษา</p>
+      <div class="seg" role="group" aria-labelledby="lang-label" id="lang-options">
+        <button type="button" data-lang="th">ไทย</button>
+        <button type="button" data-lang="en">English</button>
+        <button type="button" data-lang="zh">中文</button>
+      </div>
+      <button type="submit" class="btn btn-primary btn-block btn-close" data-i18n="done">เสร็จ</button>
+    </form>
+  </dialog>
+
+  <!-- AI settings sheet -->
   <dialog id="dlg-settings" class="sheet" aria-labelledby="settings-title">
     <form method="dialog" class="sheet-body" id="settings-form">
+      <div class="sheet-handle" aria-hidden="true"></div>
       <h2 id="settings-title" data-i18n="settingsTitle">ตั้งค่า AI (ไม่บังคับ)</h2>
       <div class="field">
         <label for="api-key" data-i18n="apiKeyLabel">Anthropic API Key</label>
@@ -79,17 +104,18 @@
         <button type="button" class="btn btn-primary" id="btn-save-settings" data-i18n="save">บันทึก</button>
         <button type="button" class="btn btn-ghost" id="btn-clear-key" data-i18n="clearKey">ลบคีย์</button>
       </div>
-      <button type="submit" class="btn btn-ghost btn-close" data-i18n="close">ปิด</button>
+      <button type="submit" class="btn btn-secondary btn-block btn-close" data-i18n="close">ปิด</button>
     </form>
   </dialog>
 
-  <!-- pharmacist dialog -->
+  <!-- help sheet: emergency numbers and pharmacist -->
   <dialog id="dlg-pharmacist" class="sheet" aria-labelledby="pharm-title">
     <form method="dialog" class="sheet-body">
+      <div class="sheet-handle" aria-hidden="true"></div>
       <h2 id="pharm-title" data-i18n="pharmTitle">ปรึกษาเภสัชกร</h2>
       <div id="pharm-options" class="stack"></div>
       <p class="help" data-i18n="pharmBringPack"></p>
-      <button type="submit" class="btn btn-ghost btn-close" data-i18n="close">ปิด</button>
+      <button type="submit" class="btn btn-secondary btn-block btn-close" data-i18n="close">ปิด</button>
     </form>
   </dialog>
 

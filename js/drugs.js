@@ -18,11 +18,10 @@
  *   categories   broad words such as "ยาเบาหวาน" or "statin". They only list the
  *                drug as a candidate; they never open it directly or identify a
  *                scanned / AI-read name, because other drugs share the category.
- *   barcodes     optional EAN/GTIN codes printed on the package
  *   strength     usual strength shown in the database
  *   form         tablet | capsule
- *   looks        typical appearances for the pill identifier. Appearance
- *                differs by manufacturer, so results are only candidates.
+ *   looks        typical appearances, drawn as the reference picture on the
+ *                drug page. Appearance differs by manufacturer.
  *   photo        optional URL of a real product photo (from an official source)
  *   highAlert    true for high-alert medicines (shown with a red banner)
  *   indications / usage / appearance            text per language

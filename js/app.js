@@ -21,14 +21,10 @@
     // vendored official SDK, resolved relative to this script
     sdkUrl: new URL('../vendor/anthropic-sdk-1.3.0.min.mjs', SCRIPT_URL).href,
     fdaUrl: 'https://www.fda.moph.go.th/',
-    fdaHost: 'fda.moph.go.th',
     emergencyTel: '1669',
     poisonTel: '1367',
     // Link to a real telepharmacy / LINE Official Account chat, if you have one.
     pharmacistChatUrl: '',
-    zxingUrl: 'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js',
-    // Subresource Integrity hash of the exact ZXing file above
-    zxingIntegrity: 'sha384-BzBxP10ZE72aitqj5UMmUsbKFliP/DZqA8Wq+BNNhlIJDGoEd1tpkMYXOg9+n6sB',
     maxImageSide: 1600,
     lowConfidence: 60,
     aiTimeoutMs: 60000
@@ -74,8 +70,6 @@
     analysis: null,       // last AI analysis {ai, demo, photo, mode, dbId}
     fallback: null,       // {reason, mode}
     comparePhoto: {},     // drugId -> user photo (session only)
-    scanResult: null,
-    identify: { shape: null, color: null, imprint: '' },
     pendingPhoto: null
   };
   if (!I18N[state.lang]) state.lang = 'th';
@@ -174,21 +168,23 @@
     calendar: '<rect width="18" height="18" x="3" y="4" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/>',
     clipboard: '<rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>',
     stop: '<rect width="14" height="14" x="5" y="5" rx="2"/>',
-    external: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>'
+    external: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+    home: '<path d="m3 10.5 9-7 9 7"/><path d="M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5"/>',
+    gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/>',
+    lifebuoy: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><path d="m4.93 4.93 4.24 4.24"/><path d="m14.83 9.17 4.24-4.24"/><path d="m14.83 14.83 4.24 4.24"/><path d="m9.17 14.83-4.24 4.24"/>',
+    chevron: '<path d="m9 18 6-6-6-6"/>'
   };
   function icon(name, size = 24) {
     return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${ICON_PATHS[name] || ''}</svg>`;
   }
 
   // ------------------------------------------------------------------
-  // Pill illustration (SVG) — used for the identifier and "reference" image
+  // Pill illustration (SVG) — the "reference" image on drug pages
   // ------------------------------------------------------------------
   const COLOR_HEX = {
     white: '#f7f7f2', yellow: '#f4cf3a', orange: '#f29a4a', pink: '#f3a3bf', red: '#d43d3d',
     purple: '#9466c9', blue: '#4f8fd6', green: '#5fb36a', brown: '#b08560', black: '#2b2b2b'
   };
-  const SHAPES = ['round', 'oval', 'oblong', 'capsule', 'other'];
-  const COLORS = Object.keys(COLOR_HEX);
 
   function pillSvg(look, label, fillOverride) {
     const c1 = fillOverride || COLOR_HEX[look.colors && look.colors[0]] || '#e3e6e8';
@@ -330,62 +326,11 @@
   }
 
   // The one drug whose name or alias equals the query exactly, else null.
-  // This is the only kind of match allowed to open a drug or link a scan / AI
+  // This is the only kind of match allowed to open a drug or link an AI
   // result to the database: partial and category matches are shown as choices.
   function exactDrug(matches) {
     const exact = matches.filter((m) => m.score === SCORE.EXACT);
     return exact.length === 1 ? exact[0].drug : null;
-  }
-
-  // find a drug name written as a whole word inside free text (QR content)
-  function findDrugInText(text) {
-    const words = normWords(text);
-    let best = null, bestLen = 0;
-    for (const { drug, terms } of INDEX) {
-      for (const term of terms) {
-        if (term.kind === 'category') continue;
-        if (term.n.length > bestLen && hasWord(words, term)) { best = drug; bestLen = term.n.length; }
-      }
-    }
-    return best;
-  }
-
-  // ------------------------------------------------------------------
-  // Pill identifier (shape / colour / imprint)
-  // ------------------------------------------------------------------
-  const NEAR_SHAPES = { oval: ['oblong'], oblong: ['oval', 'capsule'], capsule: ['oblong'], round: ['other'], other: ['round'] };
-
-  function identifyMatches({ shape, color, imprint }) {
-    const imp = norm(imprint || '');
-    const impDigits = (imprint || '').replace(/\D/g, '');
-    if (!shape && !color && !imp) return [];
-    const out = [];
-    for (const { drug, terms } of INDEX) {
-      let best = null;
-      for (const look of drug.looks || []) {
-        let score = 0, max = 0;
-        if (shape) {
-          max += 3;
-          if (look.shape === shape) score += 3;
-          else if ((NEAR_SHAPES[shape] || []).includes(look.shape)) score += 1;
-        }
-        if (color) {
-          max += 3;
-          if ((look.colors || []).includes(color)) score += 3;
-        }
-        if (imp) {
-          max += 3;
-          const imprints = (look.imprint || []).map(norm);
-          if (imprints.some((x) => x === imp)) score += 3;
-          else if (imp.length >= 3 && terms.some(({ n }) => n.includes(imp) || (n.length >= 4 && imp.includes(n)))) score += 3;
-          else if (impDigits && String(drug.strength).replace(/\D/g, ' ').split(' ').includes(impDigits)) score += 2;
-        }
-        const ratio = max ? score / max : 0;
-        if (!best || ratio > best.ratio) best = { ratio, look };
-      }
-      if (best && best.ratio >= 0.66) out.push({ drug, look: best.look, ratio: best.ratio });
-    }
-    return out.sort((a, b) => b.ratio - a.ratio).slice(0, 8);
   }
 
   // ------------------------------------------------------------------
@@ -448,7 +393,7 @@
       soon: ['warn', 'warn', t('expiringSoon')],
       ok: ['safe', 'check', t('notExpired')]
     }[st];
-    return `<div class="banner banner-${map[0]}" role="${st === 'expired' ? 'alert' : 'status'}"><span class="ico">${icon(map[1], 26)}</span><div>${esc(map[2])}<small>${esc(t('expiryLbl'))}: ${esc(formatExpiry(exp))}</small></div></div>`;
+    return `<div class="banner banner-${map[0]}" role="${st === 'expired' ? 'alert' : 'status'}"><span class="ico">${icon(map[1])}</span><div>${esc(map[2])}<small>${esc(t('expiryLbl'))}: ${esc(formatExpiry(exp))}</small></div></div>`;
   }
 
   // ------------------------------------------------------------------
@@ -555,10 +500,8 @@ ${catalogForPrompt()}
 
 Write every human-readable value in ${aiLanguageName()}, in short simple sentences suitable for elderly readers. Use "" or [] when something is unknown.`;
   }
-  function photoInstruction(mode) {
-    return mode === 'package'
-      ? 'This is a package, bottle, box or label. Read every printed word, the dosing directions and the expiry date.'
-      : 'This is a pill. Look closely at the shape, colour, score line, imprint/markings and any packaging text.';
+  function photoInstruction() {
+    return 'This photo may show pills, a blister pack, a bottle, a box or a hospital medicine bag. Read every printed word, the dosing directions and the expiry date, and look closely at the shape, colour, score line and imprint of any pills.';
   }
   function nameInstruction(q) {
     return `I searched a medicine database for ${JSON.stringify(String(q).slice(0, 200))} and it was not found. If this is a real medicine (or an obvious misspelling of one) available in Thailand, describe it. If you are not sure which medicine it is, set is_medicine to false and leave the other fields empty. There is no photo: use image_problem "none", label_text "", pill_count null and expiry_date null.`;
@@ -718,7 +661,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     return cleanAi({
       is_medicine: true, image_problem: 'none', db_id: 'paracetamol',
       generic_name: 'Paracetamol', brand_name: 'Sara', strength: '500 mg',
-      label_text: mode === 'package' ? t('demoLabel') : '',
+      label_text: t('demoLabel'),
       pill_count: 10, expiry_date: `${exp.getFullYear()}-${pad2(exp.getMonth() + 1)}`,
       confidence: 95
     });
@@ -801,7 +744,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
           system: medicineSystemPrompt(),
           content: [
             { type: 'image', source: { type: 'base64', media_type: img.mime, data: img.base64 } },
-            { type: 'text', text: photoInstruction(mode) }
+            { type: 'text', text: photoInstruction() }
           ],
           schema: MEDICINE_SCHEMA
         }, job.controller.signal));
@@ -857,7 +800,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   // ------------------------------------------------------------------
   // Photos
   // ------------------------------------------------------------------
-  function requestPhoto(mode, opts = {}) {
+  function requestPhoto(mode = 'photo', opts = {}) {
     state.pendingPhoto = { mode, compareId: opts.compareId || null };
     const input = opts.gallery ? $('#file-gallery') : $('#file-camera');
     input.value = '';
@@ -866,7 +809,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   async function handlePhotoFile(file) {
     if (!file) return;
     if (!/^image\//.test(file.type || '')) { toast(t('errNotImage')); return; }
-    const p = state.pendingPhoto || { mode: 'pill' };
+    const p = state.pendingPhoto || { mode: 'photo' };
     let img;
     try { img = await prepareImage(file); } catch (e) { toast(t('errNotImage')); return; }
     if (p.mode === 'compare') {
@@ -877,161 +820,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
       if (fig) fig.scrollIntoView({ block: 'center' });
       return;
     }
-    if (p.mode === 'barcode') {
-      await decodeImageBarcode(img.canvas);
-      return;
-    }
     await analyzePhoto(img, p.mode);
-  }
-
-  // ------------------------------------------------------------------
-  // Barcode / QR scanning
-  // ------------------------------------------------------------------
-  // session: bumped by stopCamera() so a start that is still awaiting the
-  // decoder or camera permission knows it has been cancelled
-  const scanner = { stream: null, timer: null, decode: null, canvas: null, busy: false, session: 0, starting: false };
-
-  // One shared promise per script, so concurrent callers wait for the same
-  // load; a failed load is forgotten so the next attempt can retry.
-  const scriptLoads = {};
-  function loadScript(src, integrity) {
-    if (!scriptLoads[src]) {
-      scriptLoads[src] = new Promise((resolve, reject) => {
-        const el = document.createElement('script');
-        el.src = src; el.async = true; el.crossOrigin = 'anonymous';
-        if (integrity) el.integrity = integrity;
-        el.onload = () => resolve();
-        el.onerror = () => { el.remove(); delete scriptLoads[src]; reject(new Error('load ' + src)); };
-        document.head.appendChild(el);
-      });
-    }
-    return scriptLoads[src];
-  }
-
-  async function getDecoder() {
-    if (scanner.decode) return scanner.decode;
-    if ('BarcodeDetector' in window) {
-      try {
-        const formats = await window.BarcodeDetector.getSupportedFormats();
-        if (formats && formats.length) {
-          const det = new window.BarcodeDetector({ formats });
-          scanner.decode = async (canvas) => {
-            const r = await det.detect(canvas);
-            return r && r[0] ? r[0].rawValue : null;
-          };
-          return scanner.decode;
-        }
-      } catch (e) { /* fall through to ZXing */ }
-    }
-    await loadScript(CONFIG.zxingUrl, CONFIG.zxingIntegrity);
-    const Z = window.ZXing;
-    if (!Z || !Z.MultiFormatReader) throw new Error('scanner');
-    const hints = new Map();
-    hints.set(Z.DecodeHintType.TRY_HARDER, true);
-    const reader = new Z.MultiFormatReader();
-    reader.setHints(hints);
-    scanner.decode = async (canvas) => {
-      try {
-        const src = new Z.HTMLCanvasElementLuminanceSource(canvas);
-        const bmp = new Z.BinaryBitmap(new Z.HybridBinarizer(src));
-        return reader.decode(bmp, hints).getText();
-      } catch (e) { return null; }
-    };
-    return scanner.decode;
-  }
-
-  async function startCamera() {
-    if (scanner.starting || scanner.stream) return; // ignore double taps
-    const video = $('#scan-video');
-    const wrap = $('#scanner-wrap');
-    const btn = $('#btn-start-camera');
-    if (!video || !wrap || !btn) return;
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast(t('cameraDenied')); return; }
-    const session = ++scanner.session;
-    const cancelled = () => session !== scanner.session || !video.isConnected;
-    scanner.starting = true;
-    btn.disabled = true;
-    try {
-      let decode, stream;
-      try {
-        announce(t('scannerLoading'));
-        decode = await getDecoder();
-      } catch (e) { if (!cancelled()) toast(t('scannerUnavailable')); return; }
-      if (cancelled()) return;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
-      } catch (e) { if (!cancelled()) toast(t('cameraDenied')); return; }
-      if (cancelled()) { stream.getTracks().forEach((tr) => tr.stop()); return; } // user left meanwhile
-      scanner.stream = stream;
-      video.srcObject = stream;
-      video.setAttribute('playsinline', '');
-      // not awaited: play() can stay pending until the first frame arrives,
-      // and the controls (incl. "close camera") must be visible meanwhile
-      video.play().catch(() => {});
-      wrap.hidden = false;
-      btn.hidden = true;
-      announce(t('scanHint'));
-      scanner.canvas = scanner.canvas || document.createElement('canvas');
-      clearInterval(scanner.timer);
-      scanner.timer = setInterval(() => scanFrame(video, decode, session), 350);
-    } finally {
-      if (session === scanner.session) scanner.starting = false;
-      btn.disabled = false;
-    }
-  }
-
-  async function scanFrame(video, decode, session) {
-    if (session !== scanner.session || scanner.busy || !video.videoWidth) return;
-    scanner.busy = true;
-    try {
-      const c = scanner.canvas;
-      const scale = Math.min(1, 960 / video.videoWidth);
-      c.width = Math.round(video.videoWidth * scale);
-      c.height = Math.round(video.videoHeight * scale);
-      c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
-      const code = await decode(c);
-      if (code && session === scanner.session) {
-        stopCamera();
-        if (navigator.vibrate) navigator.vibrate(120);
-        handleCode(code);
-      }
-    } finally { scanner.busy = false; }
-  }
-
-  function stopCamera() {
-    scanner.session++;
-    scanner.starting = false;
-    clearInterval(scanner.timer);
-    scanner.timer = null;
-    if (scanner.stream) scanner.stream.getTracks().forEach((tr) => tr.stop());
-    scanner.stream = null;
-    const wrap = $('#scanner-wrap');
-    if (wrap) wrap.hidden = true;
-    const btn = $('#btn-start-camera');
-    if (btn) btn.hidden = false;
-  }
-
-  async function decodeImageBarcode(canvas) {
-    let decode;
-    try { decode = await getDecoder(); } catch (e) { toast(t('scannerUnavailable')); return; }
-    const code = await decode(canvas);
-    if (code) handleCode(code);
-    else {
-      state.scanResult = { code: null };
-      renderScanResult();
-    }
-  }
-
-  function handleCode(raw) {
-    const code = String(raw).trim().slice(0, 2000);
-    const byBarcode = DRUGS.find((d) => (d.barcodes || []).includes(code));
-    if (byBarcode) { go('#/drug/' + byBarcode.id); return; }
-    const drug = findDrugInText(code);
-    const regMatch = code.match(/\b\d{1,2}\s?[A-Z]\s?\d{1,5}\/\d{2,4}(?:\s?\([A-Z]{1,3}\))?/i);
-    let url = null;
-    try { const u = new URL(code); if (/^https?:$/.test(u.protocol)) url = u; } catch (e) { /* not a URL */ }
-    state.scanResult = { code, drugId: drug ? drug.id : null, reg: regMatch ? regMatch[0] : null, url: url ? url.href : null, host: url ? url.hostname : null };
-    renderScanResult();
   }
 
   // ------------------------------------------------------------------
@@ -1059,6 +848,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     btn.setAttribute('aria-pressed', 'true');
     const label = btn.querySelector('.btn-label');
     if (label) label.textContent = t('voiceStop');
+    else btn.setAttribute('aria-label', t('voiceStop'));
     announce(t('listening'));
     toast(t('listening'));
     r.onresult = (e) => {
@@ -1075,6 +865,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
       if (recog === r) recog = null;
       btn.setAttribute('aria-pressed', 'false');
       if (label) label.textContent = t('voiceBtn');
+      else btn.setAttribute('aria-label', t('voiceBtn'));
     };
     try { r.start(); } catch (e) { recog = null; btn.setAttribute('aria-pressed', 'false'); toast(t('voiceError')); }
   }
@@ -1139,13 +930,12 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
 
   function screenHead(title) {
     return `<div class="screen-head">
-      <button type="button" class="btn btn-back" data-action="back">${icon('arrowLeft')}<span>${esc(t('back'))}</span></button>
+      <button type="button" class="btn-back" data-action="back">${icon('arrowLeft')}<span>${esc(t('back'))}</span></button>
       <h1 tabindex="-1">${esc(title)}</h1>
     </div>`;
   }
 
   function render(moveFocus) {
-    stopCamera();
     stopSpeaking();
     stopVoice();
     const r = parseRoute();
@@ -1153,13 +943,17 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     try {
       switch (r.name) {
         case 'search': title = renderSearch(r.params.get('q') || ''); break;
-        case 'identify': title = renderIdentify(); break;
-        case 'scan': title = renderScan(); break;
         case 'interactions': title = renderInteractions(); break;
         case 'drug': title = renderDrugRoute(r.arg); break;
         case 'result': title = renderResult(); break;
         case 'notfound': title = renderNotFound(); break;
-        default: title = renderHome();
+        default:
+          // unknown or retired routes (#/identify, #/scan) show the home screen
+          if (r.name !== 'home') {
+            try { history.replaceState(null, '', '#/'); } catch (e) { /* ignore */ }
+            if (navStack.length) navStack[navStack.length - 1] = '#/';
+          }
+          title = renderHome();
       }
     } catch (err) {
       // never leave the user on a blank screen
@@ -1167,6 +961,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
       state.fallback = { reason: 'not_found', mode: 'name' };
       title = renderNotFound();
     }
+    updateTabbar(parseRoute().name);
     document.title = title === t('appName') ? `${title} · AI Pill` : `${title} · ${t('appName')}`;
     if (moveFocus) {
       window.scrollTo(0, 0);
@@ -1175,88 +970,123 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     }
   }
 
+  function updateTabbar(name) {
+    $$('.tabbar a[data-tab]').forEach((el) => {
+      if (el.dataset.tab === name) el.setAttribute('aria-current', 'page');
+      else el.removeAttribute('aria-current');
+    });
+  }
+
   // ------------------------------------------------------------------
   // Screens
   // ------------------------------------------------------------------
-  function emergencyBanner() {
-    return `<section class="emergency" aria-labelledby="em-title">
-      <div class="emergency-head">${icon('danger', 30)}<div>
-        <strong id="em-title">${esc(t('emergencyTitle'))}</strong>
+  function sosCard() {
+    return `<section class="sos" aria-labelledby="sos-h">
+      <span class="tile tile-danger">${icon('danger')}</span>
+      <div style="flex:1;min-width:0">
+        <strong id="sos-h">${esc(t('emergencyTitle'))}</strong>
         <p>${esc(t('emergencyText'))}</p>
-      </div></div>
-      <div class="btn-row">
-        <a class="btn btn-call" href="tel:${CONFIG.emergencyTel}">${icon('phone')}<span>${esc(t('call1669'))}</span></a>
-        <a class="btn btn-call-outline" href="tel:${CONFIG.poisonTel}">${icon('phone')}<span>${esc(t('call1367'))}</span></a>
+        <div class="btn-row">
+          <a class="btn btn-call btn-sm" href="tel:${CONFIG.emergencyTel}">${icon('phone')}<span>${esc(t('call1669'))}</span></a>
+          <a class="btn btn-call-outline btn-sm" href="tel:${CONFIG.poisonTel}">${icon('phone')}<span>${esc(t('call1367'))}</span></a>
+        </div>
       </div>
     </section>`;
   }
   function demoNotice() {
     if (state.apiKey) return '';
-    return `<div class="notice" role="note">${icon('info')}<div><p style="margin:0 0 .4rem">${esc(t('demoNotice'))}</p>
-      <button type="button" class="btn btn-secondary" data-action="settings">${esc(t('demoSetup'))}</button></div></div>`;
+    return `<div class="pill-notice" role="note"><span>${esc(t('demoShortNotice'))}</span>
+      <button type="button" class="btn btn-secondary btn-sm" data-action="settings">${esc(t('demoSetup'))}</button></div>`;
+  }
+  function searchBar(q, autofocus) {
+    return `<form class="searchbar" id="search-form" role="search" autocomplete="off">
+      ${icon('search')}
+      <label class="sr-only" for="search-input">${esc(t('searchLabel'))}</label>
+      <input id="search-input" type="search" enterkeyhint="search" placeholder="${esc(t('homeSearchPh'))}" value="${esc(q)}"${autofocus ? ' data-autofocus' : ''}>
+      <button type="button" class="round-btn btn-mic" data-action="voice" data-target="search-input" aria-pressed="false" aria-label="${esc(t('voiceBtn'))}">${icon('mic')}</button>
+    </form>`;
+  }
+  // On the search screen results update while typing; elsewhere Enter opens
+  // the drug (exact name) or the search screen.
+  function wireSearchForm(live) {
+    const form = $('#search-form'), input = $('#search-input');
+    if (!form || !input) return;
+    if (live) {
+      let timer = null;
+      input.addEventListener('input', () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => updateSearchResults(input.value, false), 150);
+      });
+    }
+    form.addEventListener('submit', (e) => { e.preventDefault(); submitSearch(input.value); });
+  }
+  function submitSearch(q) {
+    const query = String(q || '').trim();
+    if ($('#search-results')) { updateSearchResults(query, true); return; }
+    const exact = exactDrug(searchDrugs(query).matches);
+    if (exact) go('#/drug/' + exact.id);
+    else go('#/search' + (query ? '?q=' + encodeURIComponent(query) : ''));
   }
 
   function renderHome() {
     const recent = state.recent.map(drugById).filter(Boolean);
     const ixCount = state.ixList.length;
     app.innerHTML = `
-      <div class="hero">
-        <h1 tabindex="-1">${esc(t('appName'))}</h1>
-        <p class="lead">${esc(t('appTagline'))}</p>
+      <div class="hello">
+        <h1 tabindex="-1">${esc(t('homeTitle'))}</h1>
+        <p>${esc(t('appTagline'))}</p>
       </div>
-      ${emergencyBanner()}
-      <h2 id="how">${esc(t('homeQuestion'))}</h2>
-      <nav class="cta-grid" aria-labelledby="how">
-        <a class="cta cta-primary" href="#/identify">
-          <span class="cta-icon">${icon('pill', 32)}</span>
-          <span><span class="cta-title">${esc(t('ctaPillTitle'))}</span><span class="cta-sub">${esc(t('ctaPillSub'))}</span></span>
-          <span class="cta-arrow" aria-hidden="true">›</span>
+      ${searchBar('', false)}
+      <section class="camera-card" aria-labelledby="cam-h">
+        <span class="cam-ico" aria-hidden="true">${icon('camera')}</span>
+        <h2 id="cam-h">${esc(t('takePhoto'))}</h2>
+        <p>${esc(t('takePhotoSub'))}</p>
+        <div class="btn-row">
+          <button type="button" class="btn btn-light" data-action="photo">${icon('camera')}<span>${esc(t('openCamera'))}</span></button>
+          <button type="button" class="btn btn-glass" data-action="photo" data-gallery="1">${icon('image')}<span>${esc(t('fromGallery'))}</span></button>
+        </div>
+      </section>
+      ${demoNotice()}
+      <div class="quick-grid">
+        <a class="quick" href="#/interactions">
+          <span class="tile tile-brand">${icon('layers')}</span>
+          <span class="quick-title">${esc(t('ctaIxTitle'))}</span>
+          <span class="quick-sub">${esc(t('ctaIxSub'))}</span>
+          ${ixCount ? `<span class="count-pill">${esc(t('ixBadgeCount', { n: ixCount }))}</span>` : ''}
         </a>
-        <a class="cta cta-primary" href="#/scan">
-          <span class="cta-icon">${icon('barcode', 32)}</span>
-          <span><span class="cta-title">${esc(t('ctaScanTitle'))}</span><span class="cta-sub">${esc(t('ctaScanSub'))}</span></span>
-          <span class="cta-arrow" aria-hidden="true">›</span>
-        </a>
-        <a class="cta cta-primary" href="#/search">
-          <span class="cta-icon">${icon('search', 32)}</span>
-          <span><span class="cta-title">${esc(t('ctaSearchTitle'))}</span><span class="cta-sub">${esc(t('ctaSearchSub'))}</span></span>
-          <span class="cta-arrow" aria-hidden="true">›</span>
-        </a>
-        <a class="cta cta-secondary" href="#/interactions">
-          <span class="cta-icon">${icon('layers', 30)}</span>
-          <span><span class="cta-title">${esc(t('ctaIxTitle'))}</span><span class="cta-sub">${esc(t('ctaIxSub'))}${ixCount ? ` · <strong>${esc(t('ixBadgeCount', { n: ixCount }))}</strong>` : ''}</span></span>
-          <span class="cta-arrow" aria-hidden="true">›</span>
-        </a>
-      </nav>
-      ${recent.length ? `<section class="card" style="margin-top:1.25rem" aria-labelledby="recent-h">
-        <h2 id="recent-h">${esc(t('recentTitle'))}</h2>
-        <div class="chips">${recent.map((d) => `<a class="chip" href="#/drug/${d.id}">${icon('pill', 18)}${esc(tr(d.generic))}</a>`).join('')}</div>
-      </section>` : ''}
-      <p class="trust-line">${icon('shield', 20)}<span>${esc(t('noLogin'))}</span></p>`;
+        <button type="button" class="quick" data-action="pharmacist">
+          <span class="tile tile-info">${icon('chat')}</span>
+          <span class="quick-title">${esc(t('askPharmacist'))}</span>
+          <span class="quick-sub">${esc(t('pharmSub'))}</span>
+        </button>
+      </div>
+      ${recent.length ? `<h2 class="section-label">${esc(t('recentTitle'))}</h2>
+        <div class="chips">${recent.map((d) => `<a class="chip" href="#/drug/${d.id}"><span class="chip-pill">${d.looks && d.looks[0] ? pillSvg(d.looks[0]) : ''}</span>${esc(tr(d.generic))}</a>`).join('')}</div>` : ''}
+      ${sosCard()}
+      <p class="trust-line">${icon('shield')}<span>${esc(t('noLogin'))}</span></p>`;
+    wireSearchForm(false);
     return t('appName');
   }
 
   // ----- search -----
-  // One row linking to a drug. opts: sub (second line), look (pill drawing to
-  // show, labelled for screen readers), prefix (e.g. "Possible match").
+  // One row linking to a drug. opts: sub (second line), prefix.
   function drugResultItem(d, opts = {}) {
-    const look = opts.look || (d.looks || [])[0];
+    const look = (d.looks || [])[0];
     const title = `${opts.prefix ? opts.prefix + ': ' : ''}${tr(d.generic)} ${d.strength}`;
     const sub = opts.sub || (d.brands || []).filter(isLatin).join(', ');
     return `<a class="result-item" href="#/drug/${d.id}">
-      <span class="ri-pill">${look ? pillSvg(look, opts.look ? lookLabel(look) : null) : ''}</span>
+      <span class="ri-pill">${look ? pillSvg(look) : icon('pill')}</span>
       <span class="ri-main"><span class="ri-title">${esc(title)}</span>
       <span class="ri-sub">${esc(sub)}</span></span>
-      <span class="cta-arrow" aria-hidden="true">›</span>
+      <span class="chev" aria-hidden="true">${icon('chevron')}</span>
     </a>`;
   }
 
   // The "what to do instead" buttons shown whenever a lookup fails.
-  function fallbackActions({ photoMode = null, photoLabel = '', typeName = true, byShape = false } = {}) {
+  function fallbackActions({ photo = false, photoLabel = '', typeName = true } = {}) {
     const out = [];
-    if (photoMode) out.push(`<button type="button" class="btn btn-primary btn-block" data-action="photo" data-mode="${photoMode}">${icon('camera')}<span>${esc(photoLabel)}</span></button>`);
+    if (photo) out.push(`<button type="button" class="btn btn-primary btn-block" data-action="photo">${icon('camera')}<span>${esc(photoLabel)}</span></button>`);
     if (typeName) out.push(`<a class="btn btn-secondary btn-block" href="#/search">${icon('search')}<span>${esc(t('typeInstead'))}</span></a>`);
-    if (byShape) out.push(`<a class="btn btn-secondary btn-block" href="#/identify">${icon('pill')}<span>${esc(t('byShape'))}</span></a>`);
     out.push(`<button type="button" class="btn btn-secondary btn-block" data-action="pharmacist">${icon('chat')}<span>${esc(t('askPharmacist'))}</span></button>`);
     return `<div class="stack">${out.join('')}</div>`;
   }
@@ -1264,25 +1094,9 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   function renderSearch(q) {
     app.innerHTML = `
       ${screenHead(t('searchTitle'))}
-      <form class="card" id="search-form" role="search" autocomplete="off">
-        <label class="field-label" for="search-input">${esc(t('searchLabel'))}</label>
-        <div class="search-row">
-          <input id="search-input" class="input" type="search" enterkeyhint="search" placeholder="${esc(t('searchPlaceholder'))}" value="${esc(q)}" data-autofocus>
-          <button type="submit" class="btn btn-primary">${icon('search')}<span>${esc(t('searchBtn'))}</span></button>
-          <button type="button" class="btn btn-secondary btn-mic" data-action="voice" data-target="search-input" aria-pressed="false">${icon('mic')}<span class="btn-label">${esc(t('voiceBtn'))}</span></button>
-        </div>
-      </form>
+      ${searchBar(q, true)}
       <div id="search-results" aria-live="polite"></div>`;
-    const input = $('#search-input');
-    let timer = null;
-    input.addEventListener('input', () => {
-      clearTimeout(timer);
-      timer = setTimeout(() => updateSearchResults(input.value, false), 150);
-    });
-    $('#search-form').addEventListener('submit', (e) => {
-      e.preventDefault();
-      updateSearchResults(input.value, true);
-    });
+    wireSearchForm(true);
     updateSearchResults(q, false);
     return t('searchTitle');
   }
@@ -1292,9 +1106,9 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     if (!box) return;
     try { history.replaceState(null, '', '#/search' + (q ? '?q=' + encodeURIComponent(q) : '')); } catch (e) { /* ignore */ }
     if (navStack.length) navStack[navStack.length - 1] = currentHash();
-    const query = q.trim();
+    const query = String(q || '').trim();
     if (!query) {
-      box.innerHTML = `<section class="card"><h2>${esc(t('browseAll'))}</h2><ul class="suggest-list">${DRUGS.map((d) => `<li>${drugResultItem(d)}</li>`).join('')}</ul></section>`;
+      box.innerHTML = `<h2 class="section-label">${esc(t('browseAll'))}</h2><ul class="list">${DRUGS.map((d) => `<li>${drugResultItem(d)}</li>`).join('')}</ul>`;
       return;
     }
     const { matches, suggestions } = searchDrugs(query);
@@ -1306,139 +1120,22 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
       return;
     }
     if (matches.length) {
-      box.innerHTML = `<section class="card"><h2>${esc(t('resultsCount', { n: matches.length }))}</h2>
-        <ul class="suggest-list">${matches.map((m) => `<li>${drugResultItem(m.drug, { sub: isLatin(m.term) || m.term === tr(m.drug.generic) ? '' : m.term })}</li>`).join('')}</ul></section>`;
+      box.innerHTML = `<h2 class="section-label">${esc(t('resultsCount', { n: matches.length }))}</h2>
+        <ul class="list">${matches.map((m) => `<li>${drugResultItem(m.drug, { sub: isLatin(m.term) || m.term === tr(m.drug.generic) ? '' : m.term })}</li>`).join('')}</ul>`;
       return;
     }
-    let html = `<div class="banner banner-warn" role="status"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('noResult', { q: query }))}</div></div>`;
+    let html = `<div class="banner banner-warn" role="status"><span class="ico">${icon('warn')}</span><div>${esc(t('noResult', { q: query }))}</div></div>`;
     if (suggestions.length) {
-      html += `<section class="card"><h2>${esc(t('didYouMean'))}</h2><ul class="suggest-list">${suggestions.map((x) => `<li>${drugResultItem(x.drug, { sub: x.fuzzyTerm })}</li>`).join('')}</ul></section>`;
+      html += `<h2 class="section-label">${esc(t('didYouMean'))}</h2><ul class="list" style="margin-bottom:1rem">${suggestions.map((x) => `<li>${drugResultItem(x.drug, { sub: x.fuzzyTerm })}</li>`).join('')}</ul>`;
     }
     html += `<section class="card"><ul class="tips">${t('noResultTips').map((x, i) => `<li><span class="ico" aria-hidden="true">${['🔤', '💊', '📷'][i] || '•'}</span><span>${esc(x)}</span></li>`).join('')}</ul>
       <div class="stack">
         ${state.apiKey
           ? `<button type="button" class="btn btn-primary btn-block" data-action="ask-ai" data-q="${esc(query)}">${icon('sparkle')}<span>${esc(t('askAi', { q: query }))}</span></button>`
           : `<p class="help">${esc(t('askAiNeedKey'))}</p>`}
-        ${fallbackActions({ photoMode: 'package', photoLabel: t('photoInstead'), typeName: false })}
+        ${fallbackActions({ photo: true, photoLabel: t('photoInstead'), typeName: false })}
       </div></section>`;
     box.innerHTML = html;
-  }
-
-  // ----- identify -----
-  function renderIdentify() {
-    const sel = state.identify;
-    const shapes = t('shapes'), colors = t('colors');
-    app.innerHTML = `
-      ${screenHead(t('identifyTitle'))}
-      ${demoNotice()}
-      <section class="card stack">
-        <button type="button" class="btn btn-primary btn-block" data-action="photo" data-mode="pill" style="min-height:4.5rem;font-size:1.25rem">${icon('camera', 30)}<span>${esc(t('photoPill'))}</span></button>
-        <p class="help" style="text-align:center;margin:0">${esc(t('photoPillSub'))}</p>
-        <button type="button" class="btn btn-ghost btn-block" data-action="photo" data-mode="pill" data-gallery="1">${icon('image')}<span>${esc(t('fromGallery'))}</span></button>
-      </section>
-      <div class="divider">${esc(t('orManual'))}</div>
-      <section class="card">
-        <fieldset>
-          <legend>${esc(t('shape'))}</legend>
-          <div class="option-grid">${SHAPES.map((s) => `<button type="button" class="opt" data-action="opt-shape" data-value="${s}" aria-pressed="${sel.shape === s}">${pillSvg({ shape: s, colors: [] }, null, '#e6e9ec')}<span>${esc(shapes[s])}</span></button>`).join('')}</div>
-        </fieldset>
-        <fieldset>
-          <legend>${esc(t('color'))}</legend>
-          <div class="option-grid">${COLORS.map((c) => `<button type="button" class="opt" data-action="opt-color" data-value="${c}" aria-pressed="${sel.color === c}"><span class="swatch" style="background:${COLOR_HEX[c]}" aria-hidden="true"></span><span>${esc(colors[c])}</span></button>`).join('')}</div>
-        </fieldset>
-        <div class="field">
-          <label for="imprint-input">${esc(t('imprint'))}</label>
-          <input id="imprint-input" class="input" type="text" autocomplete="off" autocapitalize="characters" placeholder="${esc(t('imprintPh'))}" value="${esc(sel.imprint)}">
-        </div>
-        <button type="button" class="btn btn-ghost" data-action="clear-identify">${esc(t('clearChoices'))}</button>
-      </section>
-      <div id="identify-results" aria-live="polite"></div>`;
-    $('#imprint-input').addEventListener('input', (e) => { state.identify.imprint = e.target.value; updateIdentifyResults(); });
-    updateIdentifyResults();
-    return t('identifyTitle');
-  }
-
-  function updateIdentifyResults() {
-    const box = $('#identify-results');
-    if (!box) return;
-    const sel = state.identify;
-    $$('[data-action="opt-shape"]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.value === sel.shape)));
-    $$('[data-action="opt-color"]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.value === sel.color)));
-    if (!sel.shape && !sel.color && !sel.imprint.trim()) {
-      box.innerHTML = `<p class="muted" style="text-align:center">${esc(t('pickSomething'))}</p>`;
-      return;
-    }
-    const list = identifyMatches(sel);
-    if (!list.length) {
-      box.innerHTML = `<section class="card"><div class="banner banner-warn"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('noCandidates'))}</div></div>
-        ${fallbackActions({ photoMode: 'pill', photoLabel: t('photoPill') })}</section>`;
-      return;
-    }
-    box.innerHTML = `<section class="card">
-      <h2>${esc(t('candidates'))} (${list.length})</h2>
-      <div class="banner banner-warn"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('candidateWarn'))}</div></div>
-      <ul class="suggest-list">${list.map(({ drug, look }) => `<li>${drugResultItem(drug, {
-        look,
-        prefix: t('possibleMatch'),
-        sub: `${lookLabel(look)} · ${(drug.brands || []).filter(isLatin).join(', ')}`
-      })}</li>`).join('')}</ul>
-    </section>`;
-  }
-
-  // ----- scan -----
-  function renderScan() {
-    app.innerHTML = `
-      ${screenHead(t('scanTitle'))}
-      ${demoNotice()}
-      <section class="card stack">
-        <button type="button" class="btn btn-primary btn-block" id="btn-start-camera" data-action="start-camera" style="min-height:4.5rem;font-size:1.2rem">${icon('barcode', 30)}<span>${esc(t('startCamera'))}</span></button>
-        <div id="scanner-wrap" hidden>
-          <div class="scanner"><video id="scan-video" muted playsinline aria-label="${esc(t('scanHint'))}"></video><div class="reticle" aria-hidden="true"></div></div>
-          <p class="help" style="text-align:center">${esc(t('scanHint'))}</p>
-          <button type="button" class="btn btn-secondary btn-block" data-action="stop-camera">${icon('stop')}<span>${esc(t('stopCamera'))}</span></button>
-        </div>
-        <button type="button" class="btn btn-ghost btn-block" data-action="photo" data-mode="barcode" data-gallery="1">${icon('image')}<span>${esc(t('uploadBarcode'))}</span></button>
-      </section>
-      <div id="scan-result" aria-live="polite"></div>
-      <section class="card stack">
-        <button type="button" class="btn btn-primary btn-block" data-action="photo" data-mode="package" style="min-height:4.5rem;font-size:1.2rem">${icon('camera', 30)}<span>${esc(t('photoPackage'))}</span></button>
-        <p class="help" style="text-align:center;margin:0">${esc(t('photoPackageSub'))}</p>
-        <button type="button" class="btn btn-ghost btn-block" data-action="photo" data-mode="package" data-gallery="1">${icon('image')}<span>${esc(t('fromGallery'))}</span></button>
-      </section>`;
-    renderScanResult();
-    return t('scanTitle');
-  }
-
-  function renderScanResult() {
-    const box = $('#scan-result');
-    if (!box) return;
-    const r = state.scanResult;
-    if (!r) { box.innerHTML = ''; return; }
-    if (!r.code) {
-      box.innerHTML = `<section class="card"><div class="banner banner-warn" role="alert"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('barcodeNoDecode'))}</div></div>
-        ${fallbackActions({ photoMode: 'package', photoLabel: t('photoPackage') })}</section>`;
-      return;
-    }
-    const drug = r.drugId ? drugById(r.drugId) : null;
-    let html = `<section class="card stack"><h2>${esc(t('codeFound'))}</h2><div class="code-box">${esc(r.code)}</div>`;
-    if (drug) {
-      // a name in free text is a lead, not an identification: info, not green
-      html += `<div class="banner banner-info"><span class="ico">${icon('info', 26)}</span><div>${esc(t('codeMatchedText'))}</div></div>${drugResultItem(drug)}`;
-    } else {
-      html += `<div class="banner banner-warn"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('codeNotInDb'))}</div></div>`;
-    }
-    if (r.reg) {
-      html += `<div class="banner banner-info"><span class="ico">${icon('shield', 26)}</span><div>${esc(t('fdaRegFound', { reg: r.reg }))}</div></div>
-        <a class="btn btn-secondary btn-block" href="${CONFIG.fdaUrl}" target="_blank" rel="noopener noreferrer">${icon('external')}<span>${esc(t('verifyFda'))}</span></a>`;
-    }
-    if (r.url) {
-      const official = r.host === CONFIG.fdaHost || r.host.endsWith('.' + CONFIG.fdaHost);
-      if (!official) html += `<div class="banner banner-warn"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('linkWarn', { host: r.host }))}</div></div>`;
-      html += `<a class="btn btn-secondary btn-block" href="${esc(r.url)}" target="_blank" rel="noopener noreferrer nofollow">${icon('external')}<span>${esc(t('openLink'))}</span></a>`;
-    }
-    if (!drug) html += fallbackActions({ photoMode: 'package', photoLabel: t('photoPackage') });
-    box.innerHTML = html + '</section>';
-    box.scrollIntoView({ block: 'nearest' });
   }
 
   // ----- drug detail -----
@@ -1463,11 +1160,15 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   function listItems(items) {
     return `<ul>${items.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>`;
   }
+  // A colour-coded block: tile icon + title + level label (never colour alone)
   function section(kind, iconName, title, body, badgeText) {
     return `<section class="section section-${kind}">
-      <h2>${icon(iconName, 26)}<span>${esc(title)}</span>${badgeText ? `<span class="badge badge-${kind}">${esc(badgeText)}</span>` : ''}</h2>
+      <div class="section-head"><span class="tile tile-${kind}">${icon(iconName)}</span><h2>${esc(title)}</h2>${badgeText ? `<span class="badge badge-${kind}">${esc(badgeText)}</span>` : ''}</div>
       ${body}
     </section>`;
+  }
+  function cardHead(iconName, title, id) {
+    return `<div class="section-head"><span class="tile tile-brand">${icon(iconName)}</span><h2${id ? ` id="${id}"` : ''}>${esc(title)}</h2></div>`;
   }
 
   // build a language-independent view model from DB data or AI output
@@ -1545,8 +1246,8 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     const identityCertain = vm.kind === 'db' && !vm.demo && !vm.guess;
     let trust = '';
     if (vm.demo) {
-      trust = `<div class="banner banner-warn" role="alert"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('demoBadge'))}<small>${esc(t('demoBadgeSub'))}</small>
-        <button type="button" class="btn btn-secondary" style="margin-top:.5rem" data-action="settings">${esc(t('demoSetup'))}</button></div></div>`;
+      trust = `<div class="banner banner-warn" role="alert"><span class="ico">${icon('warn')}</span><div>${esc(t('demoBadge'))}<small>${esc(t('demoBadgeSub'))}</small>
+        <button type="button" class="btn btn-secondary btn-sm" style="margin-top:.6rem" data-action="settings">${esc(t('demoSetup'))}</button></div></div>`;
     } else if (vm.kind === 'ai') {
       trust = `<div class="banner banner-warn" role="note"><span class="ico">${icon('sparkle', 26)}</span><div>${esc(t('aiUnverified'))}<small>${esc(t('aiUnverifiedSub'))}</small></div></div>`;
     } else if (vm.fromAi && vm.guess) {
@@ -1573,7 +1274,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
 
     const aiFacts = ai && vm.fromAi && (ai.label_text || ai.pill_count !== null || ai.expiry_date || vm.photo) ? `
       <section class="section section-info">
-        <h2>${icon('sparkle', 26)}<span>${esc(vm.demo ? t('demoFactsTitle') : t('aiReadTitle'))}</span></h2>
+        <div class="section-head"><span class="tile tile-info">${icon('sparkle')}</span><h2>${esc(vm.demo ? t('demoFactsTitle') : t('aiReadTitle'))}</h2></div>
         <div class="ai-facts">
           <div class="fact"><div class="fact-label">${esc(t('pillCountLbl'))}</div><div class="fact-value fact-big">${esc(ai.pill_count !== null ? t('pillCountUnit', { n: ai.pill_count }) : t('cannotCount'))}</div></div>
           ${exp ? `<div class="fact"><div class="fact-label">${esc(t('expiryLbl'))}</div><div class="fact-value">${esc(formatExpiry(exp))}</div></div>` : ''}
@@ -1582,40 +1283,36 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
         ${ai.label_text ? `<div class="fact" style="margin-top:.75rem"><div class="fact-label">${esc(t('labelTextLbl'))}</div><div class="fact-value label-text">${esc(ai.label_text)}</div></div>` : ''}
       </section>` : '';
 
+    const heroArt = v.photoRef ? `<img src="${esc(v.photoRef)}" alt="">`
+      : v.looks.length ? pillSvg(v.looks[0]) : icon('pill');
+
     const now = new Date();
     const years = [];
     for (let y = now.getFullYear() - 3; y <= now.getFullYear() + 8; y++) years.push(y);
 
     app.innerHTML = `
       <div class="screen-head">
-        <button type="button" class="btn btn-back" data-action="back">${icon('arrowLeft')}<span>${esc(t('back'))}</span></button>
+        <button type="button" class="btn-back" data-action="back">${icon('arrowLeft')}<span>${esc(t('back'))}</span></button>
       </div>
       ${exp && expiryStatus(exp) !== 'ok' ? expiryBanner(exp) : ''}
-      ${v.highAlert ? `<div class="banner banner-danger" role="alert"><span class="ico">${icon('danger', 26)}</span><div>${esc(t('highAlert'))}</div></div>` : ''}
+      ${v.highAlert ? `<div class="banner banner-danger" role="alert"><span class="ico">${icon('danger')}</span><div>${esc(t('highAlert'))}</div></div>` : ''}
       ${trust}
-      <header class="card drug-head">
-        <div class="eyebrow">${esc(t('genericLabel'))}</div>
-        <h1 class="drug-generic" tabindex="-1">${esc(v.generic)}</h1>
-        ${v.genericEn && v.genericEn !== v.generic ? `<p class="muted" style="margin:0 0 .4rem;font-weight:600">${esc(v.genericEn)}</p>` : ''}
+      <header class="drug-hero">
+        <div class="drug-top">
+          <span class="drug-art" aria-hidden="true">${heroArt}</span>
+          <div style="min-width:0">
+            <div class="eyebrow">${esc(t('genericLabel'))}</div>
+            <h1 class="drug-generic" tabindex="-1">${esc(v.generic)}</h1>
+            ${v.genericEn && v.genericEn !== v.generic ? `<p class="drug-en">${esc(v.genericEn)}</p>` : ''}
+          </div>
+        </div>
         ${v.brands ? `<div class="eyebrow">${esc(t('brandLabel'))}</div><p class="drug-brand">${esc(v.brands)}</p>` : ''}
         <div class="drug-meta">${badges}</div>
-        <div class="btn-row" style="margin-top:1rem">
+        <div class="btn-row">
           <button type="button" class="btn btn-primary" data-action="read-aloud" aria-pressed="false">${icon('volume')}<span class="btn-label">${esc(t('readAloud'))}</span></button>
           <button type="button" class="btn btn-secondary" data-action="add-ix" ${inList ? 'disabled' : ''}>${icon('plus')}<span>${esc(inList ? t('addedToCheck') : t('addToCheck'))}</span></button>
         </div>
       </header>
-
-      <section class="card" id="compare" aria-labelledby="cmp-h">
-        <h2 id="cmp-h">${esc(t('photoTitle'))}</h2>
-        <div class="compare">
-          <figure><div class="frame">${userFigure}</div><figcaption>${esc(t('yourPhoto'))}</figcaption></figure>
-          <figure><div class="frame">${refFigure}</div><figcaption>${esc(t('referenceImg'))}</figcaption></figure>
-        </div>
-        ${v.looks.length > 1 ? `<div class="looks-row" style="margin-top:.6rem">${v.looks.map((l) => pillSvg(l, lookLabel(l))).join('')}</div>` : ''}
-        ${v.appearance ? `<p style="margin:.75rem 0 0"><strong>${esc(t('appearanceLabel'))}:</strong> ${esc(v.appearance)}</p>` : ''}
-        ${!v.photoRef && v.looks.length ? `<p class="compare-note">${esc(t('illustrationNote'))}</p>` : ''}
-        <button type="button" class="btn btn-secondary btn-block" style="margin-top:.75rem" data-action="compare-photo" data-id="${esc(vm.compareId)}">${icon('camera')}<span>${esc(t('comparePhoto'))}</span></button>
-      </section>
 
       ${v.indications ? section('safe', 'check', t('indicationsTitle'), `<p>${esc(v.indications)}</p>`, t('levelSafe')) : ''}
       ${v.usage ? section('safe', 'clipboard', t('usageTitle'), `<p>${esc(v.usage)}</p>`, t('levelSafe')) : ''}
@@ -1624,12 +1321,24 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
       ${v.sideEffects.length ? section('warn', 'info', t('sideTitle'), listItems(v.sideEffects), t('levelCaution')) : ''}
       ${v.dangers.length ? section('danger', 'danger', t('dangerTitle'), listItems(v.dangers), t('levelDanger')) : ''}
       ${section('danger', 'phone', t('urgentTitle'), listItems([...v.urgent, t('allergyUrgent')]) +
-        `<div class="btn-row" style="margin-top:.75rem"><a class="btn btn-call" href="tel:${CONFIG.emergencyTel}">${icon('phone')}<span>${esc(t('call1669'))}</span></a><a class="btn btn-call-outline" href="tel:${CONFIG.poisonTel}">${icon('phone')}<span>${esc(t('call1367'))}</span></a></div>`, t('levelDanger'))}
+        `<div class="btn-row" style="margin-top:.85rem"><a class="btn btn-call btn-sm" href="tel:${CONFIG.emergencyTel}">${icon('phone')}<span>${esc(t('call1669'))}</span></a><a class="btn btn-call-outline btn-sm" href="tel:${CONFIG.poisonTel}">${icon('phone')}<span>${esc(t('call1367'))}</span></a></div>`, t('levelDanger'))}
+
+      <section class="card" id="compare" aria-labelledby="cmp-h">
+        ${cardHead('image', t('photoTitle'), 'cmp-h')}
+        <div class="compare">
+          <figure><div class="frame">${userFigure}</div><figcaption>${esc(t('yourPhoto'))}</figcaption></figure>
+          <figure><div class="frame">${refFigure}</div><figcaption>${esc(t('referenceImg'))}</figcaption></figure>
+        </div>
+        ${v.looks.length > 1 ? `<div class="looks-row">${v.looks.map((l) => pillSvg(l, lookLabel(l))).join('')}</div>` : ''}
+        ${v.appearance ? `<p style="margin:.75rem 0 0"><strong>${esc(t('appearanceLabel'))}:</strong> ${esc(v.appearance)}</p>` : ''}
+        ${!v.photoRef && v.looks.length ? `<p class="compare-note">${esc(t('illustrationNote'))}</p>` : ''}
+        <button type="button" class="btn btn-secondary btn-block" style="margin-top:.85rem" data-action="compare-photo" data-id="${esc(vm.compareId)}">${icon('camera')}<span>${esc(t('comparePhoto'))}</span></button>
+      </section>
 
       <section class="card" aria-labelledby="exp-h">
-        <h2 id="exp-h">${icon('calendar', 24)} ${esc(t('checkExpiry'))}</h2>
-        <p class="help">${esc(t('checkExpirySub'))}</p>
-        <div class="expiry-row">
+        ${cardHead('calendar', t('checkExpiry'), 'exp-h')}
+        <p class="help" style="margin-top:0">${esc(t('checkExpirySub'))}</p>
+        <div class="expiry-row" style="margin-top:.75rem">
           <div class="field"><label for="exp-month">${esc(t('month'))}</label>
             <select id="exp-month" class="input"><option value="">—</option>${t('months').map((m, i) => `<option value="${i + 1}" ${exp && exp.m === i + 1 ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></div>
           <div class="field"><label for="exp-year">${esc(t('year'))}</label>
@@ -1639,9 +1348,9 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
       </section>
 
       <section class="card sources" aria-labelledby="src-h">
-        <h2 id="src-h">${icon('shield', 24)} ${esc(t('sourcesTitle'))}</h2>
+        ${cardHead('shield', t('sourcesTitle'), 'src-h')}
         ${vm.kind === 'db'
-          ? `<ul>${(vm.drug.sources || []).map((s) => `<li>${esc(tr(s))}</li>`).join('')}</ul><p class="muted">${esc(t('reviewed', { d: vm.drug.reviewed || '-' }))}</p>`
+          ? `<ul>${(vm.drug.sources || []).map((x) => `<li>${esc(tr(x))}</li>`).join('')}</ul><p class="muted">${esc(t('reviewed', { d: vm.drug.reviewed || '-' }))}</p>`
           : `<p>${esc(t('sourceAi'))}</p>`}
         <a href="${CONFIG.fdaUrl}" target="_blank" rel="noopener noreferrer">${esc(t('openFda'))} ↗</a>
       </section>
@@ -1673,24 +1382,18 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
 
   // ----- not found / fallback -----
   function renderNotFound() {
-    const f = state.fallback || { reason: 'not_found', mode: 'pill' };
+    const f = state.fallback || { reason: 'not_found', mode: 'photo' };
     const issues = t('issues');
     const guess = f.guess && state.analysis && (state.analysis.ai.generic_name || state.analysis.ai.brand_name);
-    const retakeMode = f.mode === 'package' ? 'package' : 'pill';
     app.innerHTML = `
       ${screenHead(t('nfTitle'))}
-      <div class="banner banner-warn" role="alert"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('nfReason', { r: issues[f.reason] || issues.not_found }))}</div></div>
+      <div class="banner banner-warn" role="alert"><span class="ico">${icon('warn')}</span><div>${esc(t('nfReason', { r: issues[f.reason] || issues.not_found }))}</div></div>
       ${guess ? `<section class="card"><p><strong>${esc(t('aiGuess', { name: guess }))}</strong></p>
         <a class="btn btn-secondary btn-block" href="#/result">${icon('sparkle')}<span>${esc(t('viewAnyway'))}</span></a></section>` : ''}
       <section class="card">
         <h2>${esc(t('nfSub'))}</h2>
         <ul class="tips">${t('tips').map((x, i) => `<li><span class="ico" aria-hidden="true">${['💡', '📄', '🔍', '✋'][i] || '•'}</span><span>${esc(x)}</span></li>`).join('')}</ul>
-        <div class="stack">
-          ${f.mode !== 'name' ? `<button type="button" class="btn btn-primary btn-block" data-action="photo" data-mode="${retakeMode}">${icon('camera')}<span>${esc(t('retake'))}</span></button>` : ''}
-          <a class="btn btn-secondary btn-block" href="#/search">${icon('search')}<span>${esc(t('typeInstead'))}</span></a>
-          <a class="btn btn-secondary btn-block" href="#/identify">${icon('pill')}<span>${esc(t('byShape'))}</span></a>
-          <button type="button" class="btn btn-secondary btn-block" data-action="pharmacist">${icon('chat')}<span>${esc(t('askPharmacist'))}</span></button>
-        </div>
+        ${fallbackActions({ photo: f.mode !== 'name', photoLabel: t('retake') })}
       </section>`;
     return t('nfTitle');
   }
@@ -1713,23 +1416,19 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   function renderInteractions() {
     app.innerHTML = `
       ${screenHead(t('ixTitle'))}
-      <p class="lead">${esc(t('ixSub'))}</p>
+      <p class="muted" style="margin-top:-.25rem">${esc(t('ixSub'))}</p>
+      <form id="ix-form" class="searchbar" autocomplete="off">
+        ${icon('pill')}
+        <label class="sr-only" for="ix-input">${esc(t('ixLabel'))}</label>
+        <input id="ix-input" type="text" enterkeyhint="done" placeholder="${esc(t('ixPlaceholder'))}" data-autofocus>
+        <button type="button" class="round-btn btn-mic" data-action="voice" data-target="ix-input" aria-pressed="false" aria-label="${esc(t('voiceBtn'))}">${icon('mic')}</button>
+        <button type="submit" class="round-btn primary" aria-label="${esc(t('ixAdd'))}">${icon('plus')}</button>
+      </form>
+      <div id="ix-suggest" aria-live="polite" style="margin:-.25rem 0 1rem"></div>
       <section class="card">
-        <form id="ix-form" autocomplete="off">
-          <label class="field-label" for="ix-input">${esc(t('ixLabel'))}</label>
-          <div class="search-row">
-            <input id="ix-input" class="input" type="text" enterkeyhint="done" placeholder="${esc(t('ixPlaceholder'))}" data-autofocus>
-            <button type="submit" class="btn btn-primary">${icon('plus')}<span>${esc(t('ixAdd'))}</span></button>
-            <button type="button" class="btn btn-secondary btn-mic" data-action="voice" data-target="ix-input" aria-pressed="false">${icon('mic')}<span class="btn-label">${esc(t('voiceBtn'))}</span></button>
-          </div>
-          <div id="ix-suggest" aria-live="polite"></div>
-        </form>
-        <h2 style="margin-top:1.25rem" id="ix-list-h"></h2>
+        <div class="card-title"><h2 id="ix-list-h"></h2><button type="button" class="btn btn-ghost btn-sm" data-action="ix-clear">${esc(t('ixClear'))}</button></div>
         <div id="ix-list"></div>
-        <div class="btn-row" style="margin-top:1rem">
-          <button type="button" class="btn btn-primary" data-action="ix-check">${icon('layers')}<span>${esc(t('ixCheck'))}</span></button>
-          <button type="button" class="btn btn-ghost" data-action="ix-clear">${esc(t('ixClear'))}</button>
-        </div>
+        <button type="button" class="btn btn-primary btn-block" style="margin-top:1rem" data-action="ix-check">${icon('layers')}<span>${esc(t('ixCheck'))}</span></button>
       </section>
       <div id="ix-results" aria-live="polite"></div>`;
     const input = $('#ix-input');
@@ -1768,7 +1467,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     const list = matches.length ? matches.slice(0, 5) : suggestions;
     let html = '';
     if (list.length) {
-      html += `<p class="field-label" style="margin:.75rem 0 .4rem">${esc(matches.length ? t('resultsCount', { n: list.length }) : t('didYouMean'))}</p>
+      html += `<p class="field-label" style="margin:0 0 .4rem">${esc(matches.length ? t('resultsCount', { n: list.length }) : t('didYouMean'))}</p>
         <div class="chips">${list.map((m) => `<button type="button" class="chip" data-action="ix-pick" data-id="${m.drug.id}">${icon('plus', 18)}${esc(tr(m.drug.generic))}</button>`).join('')}</div>`;
     } else if (submitted) {
       html += `<p class="help" style="margin-top:.75rem">${esc(t('noResult', { q }))}</p>`;
@@ -1787,7 +1486,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     box.innerHTML = `<ul class="ix-list">${state.ixList.map((x, i) => {
       const d = x.id ? drugById(x.id) : null;
       const sub = d ? (norm(tr(d.generic)) !== norm(x.name) ? `${tr(d.generic)} ${d.strength}` : d.strength) : t('ixUnknown');
-      return `<li><span class="ri-pill" style="width:2.6rem;height:2.6rem;flex:none">${d && d.looks[0] ? pillSvg(d.looks[0]) : icon('pill', 30)}</span>
+      return `<li><span class="ri-pill">${d && d.looks[0] ? pillSvg(d.looks[0]) : icon('pill', 30)}</span>
         <span class="ix-name">${esc(x.name)}<small>${d ? '' : '⚠ '}${esc(sub)}</small></span>
         <button type="button" class="ix-remove" data-action="ix-remove" data-index="${i}" aria-label="${esc(t('ixRemove', { name: x.name }))}">✕</button></li>`;
     }).join('')}</ul>`;
@@ -1820,7 +1519,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
       html += `<div class="ix-result ix-none"><h3>${icon('check', 24)}<span>${esc(t('ixNone'))}</span></h3><p>${esc(t('ixNoneSub'))}</p></div>`;
     }
     if (r.unknown.length) {
-      html += `<div class="banner banner-warn"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('ixUnknownNote', { list: r.unknown.map((x) => x.name).join(', ') }))}</div></div>`;
+      html += `<div class="banner banner-warn"><span class="ico">${icon('warn')}</span><div>${esc(t('ixUnknownNote', { list: r.unknown.map((x) => x.name).join(', ') }))}</div></div>`;
       html += state.apiKey
         ? `<button type="button" class="btn btn-secondary btn-block" data-action="ix-ai">${icon('sparkle')}<span>${esc(t('ixAskAi'))}</span></button>`
         : `<p class="help">${esc(t('askAiNeedKey'))}</p>`;
@@ -1835,7 +1534,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
       }).join('') : `<p>${esc(t('ixAiNone'))}</p>`;
       if (state.ixAi.note) html += `<p class="help">${esc(state.ixAi.note)}</p>`;
     }
-    html += `<div class="banner banner-info" style="margin-top:1rem"><span class="ico">${icon('info', 26)}</span><div>${esc(t('ixDontStop'))}</div></div>
+    html += `<div class="banner banner-info" style="margin-top:1rem"><span class="ico">${icon('info')}</span><div>${esc(t('ixDontStop'))}</div></div>
       <button type="button" class="btn btn-secondary btn-block" data-action="pharmacist">${icon('chat')}<span>${esc(t('askPharmacist'))}</span></button></section>`;
     box.innerHTML = html;
   }
@@ -1875,25 +1574,30 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   }
 
   // ------------------------------------------------------------------
-  // Dialogs
+  // Dialogs (bottom sheets)
   // ------------------------------------------------------------------
   function openDialog(dlg) {
-    if (typeof dlg.showModal === 'function') dlg.showModal();
+    if (typeof dlg.showModal === 'function') { if (!dlg.open) dlg.showModal(); }
     else dlg.setAttribute('open', '');
+  }
+  function closeDialog(dlg) {
+    if (typeof dlg.close === 'function') dlg.close();
+    else dlg.removeAttribute('open');
   }
   function openSettings() {
     $('#api-key').value = state.apiKey;
     $('#api-model').value = state.model || CONFIG.defaultModel;
     openDialog($('#dlg-settings'));
   }
+  // help sheet: emergency numbers first, then pharmacist options
   function openPharmacist() {
-    const opts = [];
+    const opts = [`<div class="banner banner-danger" style="margin:0"><span class="ico">${icon('danger')}</span><div>${esc(t('emergencyTitle'))}<small>${esc(t('emergencyText'))}</small></div></div>`];
+    opts.push(`<a class="btn btn-call btn-block" href="tel:${CONFIG.emergencyTel}">${icon('phone')}<span>${esc(t('pharmEmergency'))}</span></a>`);
+    opts.push(`<a class="btn btn-call-outline btn-block" href="tel:${CONFIG.poisonTel}">${icon('phone')}<span>${esc(t('pharmPoison'))}</span></a>`);
     if (CONFIG.pharmacistChatUrl) {
       opts.push(`<a class="btn btn-primary btn-block" href="${esc(CONFIG.pharmacistChatUrl)}" target="_blank" rel="noopener noreferrer">${icon('chat')}<span>${esc(t('pharmChat'))}</span></a>`);
     }
-    opts.push(`<a class="btn ${CONFIG.pharmacistChatUrl ? 'btn-secondary' : 'btn-primary'} btn-block" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(t('pharmacyQuery'))}" target="_blank" rel="noopener noreferrer">${icon('pin')}<span>${esc(t('pharmNearby'))}</span></a>`);
-    opts.push(`<a class="btn btn-secondary btn-block" href="tel:${CONFIG.poisonTel}">${icon('phone')}<span>${esc(t('pharmPoison'))}</span></a>`);
-    opts.push(`<a class="btn btn-call btn-block" href="tel:${CONFIG.emergencyTel}">${icon('phone')}<span>${esc(t('pharmEmergency'))}</span></a>`);
+    opts.push(`<a class="btn btn-secondary btn-block" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(t('pharmacyQuery'))}" target="_blank" rel="noopener noreferrer">${icon('pin')}<span>${esc(t('pharmNearby'))}</span></a>`);
     $('#pharm-options').innerHTML = opts.join('');
     openDialog($('#dlg-pharmacist'));
   }
@@ -1906,41 +1610,53 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     root.lang = t('htmlLang');
     root.style.fontSize = FONT_SCALES[state.fontIdx] + '%';
     root.dataset.contrast = state.contrast === 'high' ? 'high' : 'normal';
-    $('meta[name="theme-color"]').setAttribute('content', state.contrast === 'high' ? '#000000' : '#3d5a1e');
+    $('meta[name="theme-color"]').setAttribute('content', state.contrast === 'high' ? '#000000' : '#f3f6f5');
     $$('[data-i18n]').forEach((el) => { const v = t(el.dataset.i18n); if (typeof v === 'string') el.textContent = v; });
     $$('[data-i18n-aria]').forEach((el) => { const v = t(el.dataset.i18nAria); if (typeof v === 'string') el.setAttribute('aria-label', v); });
-    $('#lang-select').value = state.lang;
-    $('#btn-font-down').disabled = state.fontIdx <= 0;
-    $('#btn-font-up').disabled = state.fontIdx >= FONT_SCALES.length - 1;
-    $('#btn-contrast').setAttribute('aria-pressed', String(state.contrast === 'high'));
+    $$('[data-icon]').forEach((el) => { if (!el.firstElementChild) el.innerHTML = icon(el.dataset.icon); });
+    // display sheet state
+    const names = t('sizeNames');
+    $('#size-options').innerHTML = FONT_SCALES.map((_, i) => `<button type="button" data-size="${i}" aria-pressed="${i === state.fontIdx}" aria-label="${esc(names[i])}" style="font-size:${(0.85 + i * 0.25).toFixed(2)}rem">${esc(t('sizeGlyph'))}</button>`).join('');
+    $$('#lang-options [data-lang]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.lang === state.lang)));
+    $('#btn-contrast').setAttribute('aria-checked', String(state.contrast === 'high'));
   }
 
   // ------------------------------------------------------------------
   // Events
   // ------------------------------------------------------------------
-  $('#lang-select').addEventListener('change', (e) => {
-    state.lang = I18N[e.target.value] ? e.target.value : 'th';
+  $('#btn-display').addEventListener('click', () => openDialog($('#dlg-display')));
+  $('#size-options').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-size]');
+    if (!b) return;
+    state.fontIdx = Number(b.dataset.size);
+    store.set('fontIdx', state.fontIdx);
+    applyPrefs();
+    const again = $(`#size-options [data-size="${state.fontIdx}"]`);
+    if (again) again.focus();
+  });
+  $('#lang-options').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-lang]');
+    if (!b) return;
+    state.lang = I18N[b.dataset.lang] ? b.dataset.lang : 'th';
     store.set('lang', state.lang);
     applyPrefs();
     render(false);
   });
-  $('#btn-font-down').addEventListener('click', () => {
-    state.fontIdx = Math.max(0, state.fontIdx - 1); store.set('fontIdx', state.fontIdx); applyPrefs();
-  });
-  $('#btn-font-up').addEventListener('click', () => {
-    state.fontIdx = Math.min(FONT_SCALES.length - 1, state.fontIdx + 1); store.set('fontIdx', state.fontIdx); applyPrefs();
-  });
   $('#btn-contrast').addEventListener('click', () => {
-    state.contrast = state.contrast === 'high' ? 'normal' : 'high'; store.set('contrast', state.contrast); applyPrefs();
+    state.contrast = state.contrast === 'high' ? 'normal' : 'high';
+    store.set('contrast', state.contrast);
+    applyPrefs();
   });
   $('#btn-settings').addEventListener('click', openSettings);
+  $('#btn-fab-camera').addEventListener('click', () => requestPhoto('photo'));
+  $('#btn-tab-help').addEventListener('click', openPharmacist);
   $('#btn-cancel-ai').addEventListener('click', () => { cancelAiJob(); hideOverlay(); });
   $('#btn-save-settings').addEventListener('click', () => {
     state.apiKey = $('#api-key').value.trim();
     state.model = $('#api-model').value.trim() || CONFIG.defaultModel;
     if (state.apiKey) store.set('anthropicKey', state.apiKey); else store.del('anthropicKey');
     store.set('claudeModel', state.model);
-    $('#dlg-settings').close();
+    closeDialog($('#dlg-settings'));
     toast(t('saved'));
     render(false);
   });
@@ -1956,35 +1672,22 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   app.addEventListener('click', (e) => {
     const el = e.target.closest('[data-action]');
     if (!el || !app.contains(el)) return;
-    const a = el.dataset.action;
-    switch (a) {
+    switch (el.dataset.action) {
       case 'back': goBack(); break;
       case 'settings': openSettings(); break;
       case 'pharmacist': openPharmacist(); break;
-      case 'photo': requestPhoto(el.dataset.mode, { gallery: !!el.dataset.gallery }); break;
+      case 'photo': requestPhoto('photo', { gallery: !!el.dataset.gallery }); break;
       case 'compare-photo': requestPhoto('compare', { compareId: el.dataset.id }); break;
-      case 'start-camera': startCamera(); break;
-      case 'stop-camera': stopCamera(); break;
       case 'ask-ai': askAiByName(el.dataset.q); break;
       case 'voice': {
         const input = document.getElementById(el.dataset.target);
         startVoice(el, (text) => {
-          input.value = text;
-          if (el.dataset.target === 'search-input') updateSearchResults(text, true);
+          if (input) input.value = text;
+          if (el.dataset.target === 'search-input') submitSearch(text);
           else submitIx(text);
         });
         break;
       }
-      case 'opt-shape':
-        state.identify.shape = state.identify.shape === el.dataset.value ? null : el.dataset.value;
-        updateIdentifyResults(); break;
-      case 'opt-color':
-        state.identify.color = state.identify.color === el.dataset.value ? null : el.dataset.value;
-        updateIdentifyResults(); break;
-      case 'clear-identify':
-        state.identify = { shape: null, color: null, imprint: '' };
-        $('#imprint-input').value = '';
-        updateIdentifyResults(); break;
       case 'ix-pick': {
         const d = drugById(el.dataset.id);
         if (d && addToIxList({ name: tr(d.generic), id: d.id })) clearIxInput();
@@ -2015,20 +1718,17 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     }
   });
 
-  // drag & drop a photo onto the identify / scan screens (desktop)
-  // (files dropped elsewhere are ignored instead of opening in the tab)
+  // drag & drop a photo anywhere (desktop) analyses it; never navigate away
   document.addEventListener('dragover', (e) => e.preventDefault());
   document.addEventListener('drop', (e) => {
     e.preventDefault();
-    const r = parseRoute().name;
-    if (r !== 'identify' && r !== 'scan') return;
     const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
     if (!file) return;
-    state.pendingPhoto = { mode: r === 'scan' ? 'package' : 'pill' };
+    state.pendingPhoto = { mode: 'photo' };
     handlePhotoFile(file);
   });
 
-  window.addEventListener('pagehide', () => { stopCamera(); stopSpeaking(); });
+  window.addEventListener('pagehide', () => { stopSpeaking(); stopVoice(); });
 
   // ------------------------------------------------------------------
   // Start
@@ -2038,5 +1738,5 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   render(false);
 
   // exposed for tests / debugging
-  window.AIPill = { searchDrugs, identifyMatches, checkInteractions, parseExpiry, handleCode, state, CONFIG };
+  window.AIPill = { searchDrugs, checkInteractions, parseExpiry, state, CONFIG };
 })();

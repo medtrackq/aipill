@@ -77,6 +77,10 @@
       conflictCross: 'ยานี้เป็น{g} ซึ่งอาจแพ้ข้ามกับ “{a}” — ปรึกษาแพทย์หรือเภสัชกรก่อนใช้',
       conflictAi: 'AI เตือนเรื่องแพ้ยา: {w}',
       ixAllergy: '“{d}” ตรงกับประวัติแพ้ยา “{a}”',
+      voiceBigTitle: 'แตะแล้วพูดชื่อยา',
+      voiceBigSub: 'เช่น “พาราเซตามอล” หรือ “ซาร่า”',
+      voiceTapStop: 'แตะอีกครั้งเพื่อหยุด',
+      homeTypePh: 'พิมพ์ชื่อยา',
       errTimeout: 'AI ใช้เวลานานเกินไป กรุณาลองใหม่อีกครั้ง',
       demoSetup: 'ตั้งค่า AI',
 
@@ -311,6 +315,10 @@
       conflictCross: 'This medicine is one of the {g}, which can cross-react with “{a}” – ask a doctor or pharmacist before taking it',
       conflictAi: 'AI allergy warning: {w}',
       ixAllergy: '“{d}” matches your allergy “{a}”',
+      voiceBigTitle: 'Tap and say the medicine name',
+      voiceBigSub: 'For example “paracetamol” or “Tylenol”',
+      voiceTapStop: 'Tap again to stop',
+      homeTypePh: 'Type a medicine name',
       errTimeout: 'The AI took too long. Please try again.',
       demoSetup: 'Set up AI',
 
@@ -545,6 +553,10 @@
       conflictCross: '此药属于{g}，可能与“{a}”交叉过敏——服用前请咨询医生或药剂师',
       conflictAi: 'AI 过敏提醒：{w}',
       ixAllergy: '“{d}”与您的过敏记录“{a}”相符',
+      voiceBigTitle: '点击后说出药名',
+      voiceBigSub: '例如“对乙酰氨基酚”或“泰诺”',
+      voiceTapStop: '再次点击停止',
+      homeTypePh: '输入药名',
       errTimeout: 'AI 响应超时，请重试。',
       demoSetup: '设置 AI',
 

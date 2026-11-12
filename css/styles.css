@@ -55,7 +55,9 @@
 * { box-sizing: border-box; }
 
 html {
-  font-size: 18px;              /* changed by JS: 18 / 21 / 24 / 28 */
+  /* relative to the browser's default so the user's own text-size setting is
+     kept; JS switches between 112.5 / 131.25 / 150 / 175% (18–28px at 16px) */
+  font-size: 112.5%;
   -webkit-text-size-adjust: 100%;
 }
 

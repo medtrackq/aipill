@@ -14,7 +14,11 @@
  *   ingredient   active ingredient key, used to detect duplicate medicines
  *   generic      generic name per language
  *   brands       trade names and common aliases (any language, used for search)
- *   aliases      extra search words (colloquial names, misspellings)
+ *   aliases      other names for THIS exact drug (nicknames, misspellings)
+ *   categories   broad words such as "ยาเบาหวาน" or "statin". They only list the
+ *                drug as a candidate; they never open it directly or identify a
+ *                scanned / AI-read name, because other drugs share the category.
+ *   barcodes     optional EAN/GTIN codes printed on the package
  *   strength     usual strength shown in the database
  *   form         tablet | capsule
  *   looks        typical appearances for the pill identifier. Appearance
@@ -52,7 +56,8 @@
       ingredient: 'paracetamol',
       generic: L('พาราเซตามอล', 'Paracetamol (Acetaminophen)', '对乙酰氨基酚（扑热息痛）'),
       brands: ['Sara', 'ซาร่า', 'Tylenol', 'ไทลินอล', 'Panadol', 'พานาดอล', 'Tempra', 'เทมปร้า'],
-      aliases: ['para', 'พารา', 'acetaminophen', 'ยาแก้ปวด', 'ยาลดไข้', '扑热息痛', 'paracetamal', 'parasetamol'],
+      aliases: ['para', 'พารา', 'acetaminophen', '扑热息痛', 'paracetamal', 'parasetamol'],
+      categories: ['ยาแก้ปวด', 'ยาลดไข้'],
       strength: '500 mg',
       form: 'tablet',
       looks: [
@@ -97,7 +102,8 @@
       group: 'nsaid',
       generic: L('ไอบูโพรเฟน', 'Ibuprofen', '布洛芬'),
       brands: ['Brufen', 'บรูเฟน', 'Nurofen', 'นูโรเฟน', 'Advil'],
-      aliases: ['ibu', 'ไอบู', 'ยาแก้ปวดกล้ามเนื้อ', 'ยาแก้อักเสบกล้ามเนื้อ', 'nsaid', 'ibuprofin'],
+      aliases: ['ibu', 'ไอบู', 'ibuprofin'],
+      categories: ['ยาแก้ปวดกล้ามเนื้อ', 'ยาแก้อักเสบกล้ามเนื้อ', 'nsaid'],
       strength: '400 mg',
       form: 'tablet',
       looks: [
@@ -147,7 +153,8 @@
       group: 'antiplatelet',
       generic: L('แอสไพริน (ขนาดต่ำ)', 'Aspirin (low dose)', '阿司匹林（低剂量）'),
       brands: ['Aspent-M', 'แอสเพนท์', 'Bayer Aspirin', 'ไบเออร์'],
-      aliases: ['aspirin', 'แอสไพริน', 'asa', 'ยาละลายลิ่มเลือด', 'ยาต้านเกล็ดเลือด', 'asprin', 'แอสไพริน 81'],
+      aliases: ['aspirin', 'แอสไพริน', 'asa', 'asprin', 'แอสไพริน 81'],
+      categories: ['ยาละลายลิ่มเลือด', 'ยาต้านเกล็ดเลือด'],
       strength: '81 mg',
       form: 'tablet',
       looks: [
@@ -196,7 +203,8 @@
       highAlert: true,
       generic: L('วาร์ฟาริน', 'Warfarin', '华法林'),
       brands: ['Orfarin', 'ออร์ฟาริน', 'Coumadin', 'คูมาดิน'],
-      aliases: ['ยาต้านการแข็งตัวของเลือด', 'ยาละลายลิ่มเลือด', 'warfarine', 'วาฟาริน'],
+      aliases: ['warfarine', 'วาฟาริน'],
+      categories: ['ยาต้านการแข็งตัวของเลือด', 'ยาละลายลิ่มเลือด'],
       strength: '1 / 2 / 3 / 5 mg',
       form: 'tablet',
       looks: [
@@ -247,7 +255,8 @@
       group: 'antiplatelet',
       generic: L('โคลพิโดเกรล', 'Clopidogrel', '氯吡格雷'),
       brands: ['Plavix', 'พลาวิกซ์'],
-      aliases: ['ยาต้านเกล็ดเลือด', 'clopidogrel bisulfate', 'โคลพิโดเกรล 75', 'clopidogral'],
+      aliases: ['clopidogrel bisulfate', 'โคลพิโดเกรล 75', 'clopidogral'],
+      categories: ['ยาต้านเกล็ดเลือด'],
       strength: '75 mg',
       form: 'tablet',
       looks: [
@@ -293,7 +302,8 @@
       group: 'ppi',
       generic: L('โอเมพราโซล', 'Omeprazole', '奥美拉唑'),
       brands: ['Miracid', 'มิราซิด', 'Losec', 'โลเสค'],
-      aliases: ['ยาลดกรด', 'ยาโรคกระเพาะ', 'ยากระเพาะ', 'omeprazol', 'โอเมพลาโซล'],
+      aliases: ['omeprazol', 'โอเมพลาโซล'],
+      categories: ['ยาลดกรด', 'ยาโรคกระเพาะ', 'ยากระเพาะ'],
       strength: '20 mg',
       form: 'capsule',
       looks: [
@@ -336,7 +346,8 @@
       group: 'penicillin',
       generic: L('อะม็อกซีซิลลิน', 'Amoxicillin', '阿莫西林'),
       brands: ['Amoxil', 'อะม็อกซิล'],
-      aliases: ['amoxy', 'อะม็อกซี่', 'ยาแก้อักเสบ', 'ยาฆ่าเชื้อ', 'ยาปฏิชีวนะ', 'antibiotic', 'amoxicilin', 'อะมอกซี'],
+      aliases: ['amoxy', 'อะม็อกซี่', 'amoxicilin', 'อะมอกซี'],
+      categories: ['ยาแก้อักเสบ', 'ยาฆ่าเชื้อ', 'ยาปฏิชีวนะ', 'antibiotic'],
       strength: '500 mg',
       form: 'capsule',
       looks: [
@@ -383,7 +394,8 @@
       group: 'quinolone',
       generic: L('ไซโปรฟลอกซาซิน', 'Ciprofloxacin', '环丙沙星'),
       brands: ['Ciprobay', 'ซิโปรเบย์', 'Cipro'],
-      aliases: ['cipro', 'ซิโปร', 'ไซโปร', 'ยาฆ่าเชื้อ', 'ยาปฏิชีวนะ', 'ciprofloxacine'],
+      aliases: ['cipro', 'ซิโปร', 'ไซโปร', 'ciprofloxacine'],
+      categories: ['ยาฆ่าเชื้อ', 'ยาปฏิชีวนะ', 'antibiotic'],
       strength: '500 mg',
       form: 'tablet',
       looks: [
@@ -428,7 +440,8 @@
       group: 'antihistamine',
       generic: L('คลอร์เฟนิรามีน', 'Chlorpheniramine (CPM)', '氯苯那敏（扑尔敏）'),
       brands: ['CPM', 'ซีพีเอ็ม', 'Piriton'],
-      aliases: ['chlorphenamine', 'ยาแก้แพ้', 'ยาแก้แพ้เม็ดเหลือง', 'ยาแก้คัน', '扑尔敏', 'cpm 4'],
+      aliases: ['chlorphenamine', '扑尔敏', 'cpm 4'],
+      categories: ['ยาแก้แพ้', 'ยาแก้แพ้เม็ดเหลือง', 'ยาแก้คัน'],
       strength: '4 mg',
       form: 'tablet',
       looks: [
@@ -473,7 +486,8 @@
       group: 'antidiabetic',
       generic: L('เมทฟอร์มิน', 'Metformin', '二甲双胍'),
       brands: ['Glucophage', 'กลูโคฟาจ'],
-      aliases: ['ยาเบาหวาน', 'metformin hcl', 'เมตฟอร์มิน', 'metformine'],
+      aliases: ['metformin hcl', 'เมตฟอร์มิน', 'metformine'],
+      categories: ['ยาเบาหวาน'],
       strength: '500 mg',
       form: 'tablet',
       looks: [
@@ -519,7 +533,8 @@
       group: 'ccb',
       generic: L('แอมโลดิพีน', 'Amlodipine', '氨氯地平'),
       brands: ['Norvasc', 'นอร์วาสก์'],
-      aliases: ['ยาความดัน', 'ยาลดความดัน', 'amlodipine besylate', 'แอมโลดิปีน', 'amlodipin'],
+      aliases: ['amlodipine besylate', 'แอมโลดิปีน', 'amlodipin'],
+      categories: ['ยาความดัน', 'ยาลดความดัน'],
       strength: '5 mg',
       form: 'tablet',
       looks: [
@@ -561,7 +576,8 @@
       group: 'statin',
       generic: L('ซิมวาสแตติน', 'Simvastatin', '辛伐他汀'),
       brands: ['Zocor', 'โซคอร์'],
-      aliases: ['ยาลดไขมัน', 'ยาลดคอเลสเตอรอล', 'statin', 'ซิมวา', 'simvastatine'],
+      aliases: ['ซิมวา', 'simvastatine'],
+      categories: ['ยาลดไขมัน', 'ยาลดคอเลสเตอรอล', 'statin'],
       strength: '20 mg',
       form: 'tablet',
       looks: [

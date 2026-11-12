@@ -22,10 +22,16 @@
     // Link to a real telepharmacy / LINE Official Account chat, if you have one.
     pharmacistChatUrl: '',
     zxingUrl: 'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js',
+    // Subresource Integrity hash of the exact ZXing file above
+    zxingIntegrity: 'sha384-BzBxP10ZE72aitqj5UMmUsbKFliP/DZqA8Wq+BNNhlIJDGoEd1tpkMYXOg9+n6sB',
     maxImageSide: 1600,
-    lowConfidence: 60
+    lowConfidence: 60,
+    aiTimeoutMs: 45000
   };
-  const FONT_SIZES = [18, 21, 24, 28];
+  // Text sizes as a multiple of the browser's own default font size, so a user
+  // who already enlarged text in their browser keeps that enlargement
+  // (at the common 16px default: 18 / 21 / 24 / 28px).
+  const FONT_SCALES = [112.5, 131.25, 150, 175];
 
   // ------------------------------------------------------------------
   // Storage (wrapped: private mode / blocked storage must not break the app)
@@ -37,6 +43,8 @@
     set(k, v) { try { localStorage.setItem('aipill.' + k, JSON.stringify(v)); } catch (e) { /* ignore */ } },
     del(k) { try { localStorage.removeItem('aipill.' + k); } catch (e) { /* ignore */ } }
   };
+
+  function arrayOf(v, ok) { return Array.isArray(v) ? v.filter(ok) : []; }
 
   function detectLang() {
     const n = (navigator.language || 'th').toLowerCase();
@@ -50,12 +58,12 @@
 
   const state = {
     lang: store.get('lang', detectLang()),
-    fontIdx: Math.min(FONT_SIZES.length - 1, Math.max(0, store.get('fontIdx', 0))),
+    fontIdx: Math.min(FONT_SCALES.length - 1, Math.max(0, Math.round(Number(store.get('fontIdx', 0))) || 0)),
     contrast: store.get('contrast', prefersHighContrast() ? 'high' : 'normal'),
     apiKey: store.get('apiKey', ''),
     model: store.get('model', CONFIG.defaultModel),
-    recent: store.get('recent', []),
-    ixList: store.get('ixList', []),
+    recent: arrayOf(store.get('recent', []), (x) => typeof x === 'string'),
+    ixList: arrayOf(store.get('ixList', []), (x) => x && typeof x.name === 'string'),
     ixResult: null,
     ixAi: null,
     analysis: null,       // last AI analysis {ai, demo, photo, mode, dbId}
@@ -208,7 +216,8 @@
       .replace(/[\s\-_.,/()（）'"’·]+/g, '');
   }
   function stripStrength(q) {
-    return String(q || '').replace(/\d+(?:[.,]\d+)?\s*(?:mg|มก\.?|มิลลิกรัม|毫克|g|กรัม|tab|tabs|เม็ด)?/gi, ' ');
+    // Latin units need a word boundary so "500 Glucophage" keeps its "G"
+    return String(q || '').replace(/\d+(?:[.,]\d+)?\s*(?:(?:mg|g|tabs?)(?![a-z])|มก\.?|มิลลิกรัม|กรัม|เม็ด|毫克)?/gi, ' ');
   }
   function levenshtein(a, b) {
     if (a === b) return 0;
@@ -226,38 +235,73 @@
   }
   const similarity = (a, b) => 1 - levenshtein(a, b) / Math.max(a.length, b.length, 1);
 
+  // Same normalisation as norm(), but punctuation becomes spaces and letters are
+  // split from digits, so whole words can be matched: "paracetamol500mg" →
+  // " paracetamol 500 mg ". Padded with spaces for simple boundary checks.
+  function normWords(s) {
+    return ' ' + String(s || '').toLowerCase().normalize('NFKC')
+      .replace(/[็-๎]/g, '')
+      .replace(/(\p{L})(\p{N})/gu, '$1 $2').replace(/(\p{N})(\p{L})/gu, '$1 $2')
+      .replace(/[^\p{L}\p{M}\p{N}]+/gu, ' ').trim() + ' ';
+  }
+  const CJK_ONLY = /^[㐀-鿿豈-﫿]+$/;
+  // true when `term` appears in `words` as a whole word (CJK has no spaces, so
+  // plain containment is used for all-CJK names)
+  function hasWord(words, term) {
+    if (CJK_ONLY.test(term.n)) return term.n.length >= 2 && words.replace(/ /g, '').includes(term.n);
+    return term.n.length >= 4 && words.includes(term.words);
+  }
+
+  // kind: 'name' = generic or brand name, 'alias' = another name for this exact
+  // drug, 'category' = a broad word shared by many drugs (never identifies one)
   const INDEX = DRUGS.map((d) => {
-    const raw = [d.id, d.generic.th, d.generic.en, d.generic.zh, ...(d.brands || []), ...(d.aliases || [])];
-    const parts = [];
-    raw.forEach((term) => {
-      parts.push(term);
-      String(term).split(/[()（）]/).forEach((p) => { if (p.trim()) parts.push(p.trim()); });
-    });
-    const terms = Array.from(new Set(parts)).map((term) => ({ term, n: norm(term) })).filter((x) => x.n);
+    const entries = [];
+    const add = (term, kind) => {
+      [term, ...String(term).split(/[()（）]/)].forEach((p) => {
+        const x = String(p).trim();
+        if (x) entries.push({ term: x, kind });
+      });
+    };
+    [d.generic.th, d.generic.en, d.generic.zh, ...(d.brands || [])].forEach((x) => add(x, 'name'));
+    [d.id, ...(d.aliases || [])].forEach((x) => add(x, 'alias'));
+    (d.categories || []).forEach((x) => add(x, 'category'));
+    const seen = new Set();
+    const terms = entries
+      .map((e) => ({ term: e.term, kind: e.kind, n: norm(e.term), words: normWords(e.term) }))
+      .filter((x) => x.n && !seen.has(x.n + x.kind) && seen.add(x.n + x.kind));
     return { drug: d, terms };
   });
 
+  const SCORE = { EXACT: 100, PREFIX: 90, INFIX: 80, CATEGORY: 75, WORD: 72 };
+
   function searchDrugs(query) {
-    const nq = norm(stripStrength(query));
+    const stripped = stripStrength(query);
+    const nq = norm(stripped);
     if (!nq) return { matches: [], suggestions: [] };
+    const words = normWords(stripped);
     const scored = INDEX.map(({ drug, terms }) => {
       let best = 0, bestTerm = '', fuzzy = 0, fuzzyTerm = '';
-      for (const { term, n } of terms) {
+      for (const term of terms) {
+        const n = term.n;
         let s = 0;
-        if (n === nq) s = 100;
-        else if (n.startsWith(nq) && nq.length >= 2) s = 90;
-        else if (nq.length >= 3 && n.includes(nq)) s = 80;
-        else if (n.length >= 4 && nq.includes(n)) s = 72;
-        if (s > best) { best = s; bestTerm = term; }
-        if (nq.length >= 3) {
+        if (term.kind === 'category') {
+          // broad words only list the drug as a candidate
+          if (n === nq) s = SCORE.CATEGORY;
+          else if (nq.length >= 3 && n.startsWith(nq)) s = SCORE.WORD;
+        } else if (n === nq) s = SCORE.EXACT;
+        else if (n.startsWith(nq) && nq.length >= 2) s = SCORE.PREFIX;
+        else if (nq.length >= 3 && n.includes(nq)) s = SCORE.INFIX;
+        else if (hasWord(words, term)) s = SCORE.WORD;
+        if (s > best) { best = s; bestTerm = term.term; }
+        if (nq.length >= 3 && term.kind !== 'category') {
           let f = similarity(nq, n);
           if (nq.length >= 4 && n.length > nq.length) f = Math.max(f, similarity(nq, n.slice(0, nq.length)) - 0.05);
-          if (f > fuzzy) { fuzzy = f; fuzzyTerm = term; }
+          if (f > fuzzy) { fuzzy = f; fuzzyTerm = term.term; }
         }
       }
       return { drug, score: best, term: bestTerm, fuzzy, fuzzyTerm };
     });
-    const matches = scored.filter((x) => x.score >= 70).sort((a, b) => b.score - a.score);
+    const matches = scored.filter((x) => x.score >= SCORE.WORD).sort((a, b) => b.score - a.score);
     const suggestions = matches.length ? [] : scored
       .filter((x) => x.fuzzy >= 0.55)
       .sort((a, b) => b.fuzzy - a.fuzzy)
@@ -265,13 +309,22 @@
     return { matches, suggestions };
   }
 
-  // find a drug name inside free text (QR content, AI output)
+  // The one drug whose name or alias equals the query exactly, else null.
+  // This is the only kind of match allowed to open a drug or link a scan / AI
+  // result to the database: partial and category matches are shown as choices.
+  function exactDrug(matches) {
+    const exact = matches.filter((m) => m.score === SCORE.EXACT);
+    return exact.length === 1 ? exact[0].drug : null;
+  }
+
+  // find a drug name written as a whole word inside free text (QR content)
   function findDrugInText(text) {
-    const nt = norm(text);
+    const words = normWords(text);
     let best = null, bestLen = 0;
     for (const { drug, terms } of INDEX) {
-      for (const { n } of terms) {
-        if (n.length >= 4 && nt.includes(n) && n.length > bestLen) { best = drug; bestLen = n.length; }
+      for (const term of terms) {
+        if (term.kind === 'category') continue;
+        if (term.n.length > bestLen && hasWord(words, term)) { best = drug; bestLen = term.n.length; }
       }
     }
     return best;
@@ -336,7 +389,8 @@
     }
     const order = { major: 0, moderate: 1, minor: 2 };
     results.sort((x, y) => order[x.level] - order[y.level]);
-    return { results, unknown: list.filter((x) => !x.id) };
+    // ids that are no longer in the database are reported as unchecked too
+    return { results, unknown: list.filter((x) => !x.id || !drugById(x.id)) };
   }
 
   // ------------------------------------------------------------------
@@ -380,14 +434,6 @@
   // ------------------------------------------------------------------
   // Images
   // ------------------------------------------------------------------
-  function readAsDataURL(file) {
-    return new Promise((resolve, reject) => {
-      const r = new FileReader();
-      r.onload = () => resolve(r.result);
-      r.onerror = () => reject(r.error);
-      r.readAsDataURL(file);
-    });
-  }
   function loadImg(src) {
     return new Promise((resolve, reject) => {
       const img = new Image();
@@ -396,14 +442,20 @@
       img.src = src;
     });
   }
+  // Decode straight from the file via an object URL (no full-size base64 copy
+  // of a 5–10 MB phone photo), then downscale before encoding.
   async function prepareImage(file) {
-    const url = await readAsDataURL(file);
-    const img = await loadImg(url);
-    const scale = Math.min(1, CONFIG.maxImageSide / Math.max(img.naturalWidth, img.naturalHeight));
+    const url = URL.createObjectURL(file);
     const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
-    canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
-    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    try {
+      const img = await loadImg(url);
+      const scale = Math.min(1, CONFIG.maxImageSide / Math.max(img.naturalWidth, img.naturalHeight));
+      canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
     const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
     return { dataUrl, base64: dataUrl.split(',')[1], mime: 'image/jpeg', canvas };
   }
@@ -488,7 +540,28 @@ Respond with ONLY a JSON object:
     }
   }
 
-  async function geminiCall(parts) {
+  // One AI request at a time. It can be cancelled from the overlay, is
+  // cancelled when the user navigates away, and times out after aiTimeoutMs.
+  let aiJob = null;
+  function beginAiJob() {
+    cancelAiJob();
+    const job = { controller: new AbortController(), timedOut: false };
+    job.timer = setTimeout(() => { job.timedOut = true; job.controller.abort(); }, CONFIG.aiTimeoutMs);
+    aiJob = job;
+    return job;
+  }
+  function endAiJob(job) {
+    clearTimeout(job.timer);
+    if (aiJob === job) aiJob = null;
+  }
+  function cancelAiJob() {
+    if (!aiJob) return;
+    clearTimeout(aiJob.timer);
+    aiJob.controller.abort();
+    aiJob = null;
+  }
+
+  async function geminiCall(parts, signal) {
     const model = (state.model || CONFIG.defaultModel).trim();
     const url = CONFIG.apiBase + encodeURIComponent(model) + ':generateContent';
     const makeBody = (withThinking) => JSON.stringify({
@@ -498,11 +571,21 @@ Respond with ONLY a JSON object:
         withThinking ? { thinkingConfig: { thinkingLevel: 'low' } } : {}
       )
     });
-    const send = (body) => fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': state.apiKey },
-      body
-    });
+    const send = async (body) => {
+      try {
+        return await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': state.apiKey },
+          body,
+          signal
+        });
+      } catch (e) {
+        if (e && e.name === 'AbortError') throw e;
+        const err = new Error((e && e.message) || 'network');
+        err.network = true; // fetch itself failed: offline, DNS, CORS, proxy…
+        throw err;
+      }
+    };
     let res = await send(makeBody(true));
     if (res.status === 400) {
       const txt = await res.clone().text();
@@ -524,12 +607,29 @@ Respond with ONLY a JSON object:
     return parseJsonLoose(text);
   }
 
+  // confidence may arrive as 87, "87%", 0.87 or "0.87"
+  function parseConfidence(v) {
+    if (v === null || v === undefined || v === '') return null;
+    const str = String(v);
+    let n = parseFloat(str.replace(/[^\d.]/g, ''));
+    if (!isFinite(n)) return null;
+    if (!str.includes('%') && n > 0 && (n < 1 || (n === 1 && str.includes('.')))) n *= 100; // 0–1 scale
+    return Math.round(Math.max(0, Math.min(100, n)));
+  }
+
+  function invalidAiError() {
+    const e = new Error('invalid AI response');
+    e.blocked = true;
+    return e;
+  }
+
   // make AI output safe and predictable
   function cleanAi(raw) {
+    if (Array.isArray(raw)) raw = raw[0];
+    if (!raw || typeof raw !== 'object') throw invalidAiError();
     const s = (v) => (v === null || v === undefined ? '' : String(v)).trim();
     const arr = (v) => (Array.isArray(v) ? v : v ? [v] : []).map(s).filter(Boolean).slice(0, 8);
-    let conf = parseInt(String(raw.confidence === undefined ? raw.confidence_score : raw.confidence).replace(/[^\d]/g, ''), 10);
-    if (isNaN(conf)) conf = null; else conf = Math.max(0, Math.min(100, conf));
+    const conf = parseConfidence(raw.confidence === undefined ? raw.confidence_score : raw.confidence);
     let count = raw.pill_count;
     if (typeof count === 'string') { const n = parseInt(count.replace(/[^\d]/g, ''), 10); count = isNaN(n) ? null : n; }
     if (typeof count !== 'number' || !isFinite(count) || count < 0) count = null;
@@ -556,7 +656,7 @@ Respond with ONLY a JSON object:
 
   function aiErrorMessage(err) {
     if (err && err.blocked) return t('errBlocked');
-    if (err && err.name === 'TypeError') return t('errNetwork');
+    if (err && err.network) return t('errNetwork');
     if (err && (err.status === 401 || err.status === 403 || err.status === 429)) return t('errKey');
     if (err && err.status === 400 && /api.?key/i.test(err.apiMessage || '')) return t('errKey');
     return t('errGeneric', { msg: (err && err.message) || '?' });
@@ -577,11 +677,18 @@ Respond with ONLY a JSON object:
   // decide what to show after an analysis
   function resolveAnalysis(ai) {
     let dbId = ai.db_id;
+    if (dbId && ai.generic_name) {
+      // the AI's db_id must agree with the name it read; otherwise (e.g. it
+      // read "Esomeprazole" but picked omeprazole) show it as unverified AI data
+      const agrees = searchDrugs(ai.generic_name).matches.some((m) => m.drug.id === dbId)
+        || (ai.brand_name && searchDrugs(ai.brand_name).matches.some((m) => m.drug.id === dbId && m.score === SCORE.EXACT));
+      if (!agrees) dbId = null;
+    }
     if (!dbId) {
       for (const name of [ai.generic_name, ai.brand_name]) {
         if (!name) continue;
-        const { matches } = searchDrugs(name);
-        if (matches.length && matches[0].score >= 90) { dbId = matches[0].drug.id; break; }
+        const d = exactDrug(searchDrugs(name).matches);
+        if (d) { dbId = d.id; break; }
       }
     }
     const hasName = !!(ai.generic_name || ai.brand_name || dbId);
@@ -593,22 +700,35 @@ Respond with ONLY a JSON object:
     return { fail: null, dbId };
   }
 
+  // shared error handling for AI jobs; returns nothing
+  function handleAiFailure(job, err) {
+    if (err && err.name === 'AbortError') {
+      if (job.timedOut) toast(t('errTimeout'));
+      return; // cancelled by the user or by navigation: stay quiet
+    }
+    console.error(err);
+    toast(aiErrorMessage(err));
+  }
+
   async function analyzePhoto(img, mode) {
+    const job = beginAiJob();
     showOverlay(t('analyzing'), t('analyzingSub'));
     try {
       let ai, demo = false;
       if (!state.apiKey) {
         await sleep(1200);
+        if (job.controller.signal.aborted) return;
         ai = demoAnalysis(mode);
         demo = true;
       } else {
         ai = cleanAi(await geminiCall([
           { text: imagePrompt(mode) },
           { inlineData: { mimeType: img.mime, data: img.base64 } }
-        ]));
+        ], job.controller.signal));
       }
       const outcome = resolveAnalysis(ai);
-      state.analysis = { ai, demo, photo: img.dataUrl, mode, dbId: outcome.dbId };
+      state.analysis = { ai, demo, photo: img.dataUrl, mode, dbId: outcome.dbId, guess: !!outcome.guess };
+      endAiJob(job);
       hideOverlay();
       if (outcome.fail) {
         state.fallback = { reason: outcome.fail, mode, guess: !!outcome.guess };
@@ -617,19 +737,22 @@ Respond with ONLY a JSON object:
         go('#/result');
       }
     } catch (err) {
-      hideOverlay();
-      console.error(err);
-      toast(aiErrorMessage(err));
+      handleAiFailure(job, err);
+    } finally {
+      if (aiJob === job) hideOverlay();
+      endAiJob(job);
     }
   }
 
   async function askAiByName(q) {
     if (!state.apiKey) { openSettings(); return; }
+    const job = beginAiJob();
     showOverlay(t('searchingAi'), t('analyzingSub'));
     try {
-      const ai = cleanAi(await geminiCall([{ text: namePrompt(q) }]));
+      const ai = cleanAi(await geminiCall([{ text: namePrompt(q) }], job.controller.signal));
       const outcome = resolveAnalysis(ai);
-      state.analysis = { ai, demo: false, photo: null, mode: 'name', dbId: outcome.dbId };
+      state.analysis = { ai, demo: false, photo: null, mode: 'name', dbId: outcome.dbId, guess: !!outcome.guess };
+      endAiJob(job);
       hideOverlay();
       if (outcome.fail) {
         state.fallback = { reason: outcome.fail === 'low_confidence' ? 'low_confidence' : 'not_found', mode: 'name', guess: !!outcome.guess };
@@ -640,9 +763,10 @@ Respond with ONLY a JSON object:
         go('#/result');
       }
     } catch (err) {
-      hideOverlay();
-      console.error(err);
-      toast(aiErrorMessage(err));
+      handleAiFailure(job, err);
+    } finally {
+      if (aiJob === job) hideOverlay();
+      endAiJob(job);
     }
   }
 
@@ -679,17 +803,25 @@ Respond with ONLY a JSON object:
   // ------------------------------------------------------------------
   // Barcode / QR scanning
   // ------------------------------------------------------------------
-  const scanner = { stream: null, timer: null, decode: null, canvas: null, busy: false };
+  // session: bumped by stopCamera() so a start that is still awaiting the
+  // decoder or camera permission knows it has been cancelled
+  const scanner = { stream: null, timer: null, decode: null, canvas: null, busy: false, session: 0, starting: false };
 
-  function loadScript(src) {
-    return new Promise((resolve, reject) => {
-      if ($(`script[src="${src}"]`)) { resolve(); return; }
-      const s = document.createElement('script');
-      s.src = src; s.async = true; s.crossOrigin = 'anonymous';
-      s.onload = () => resolve();
-      s.onerror = () => reject(new Error('load ' + src));
-      document.head.appendChild(s);
-    });
+  // One shared promise per script, so concurrent callers wait for the same
+  // load; a failed load is forgotten so the next attempt can retry.
+  const scriptLoads = {};
+  function loadScript(src, integrity) {
+    if (!scriptLoads[src]) {
+      scriptLoads[src] = new Promise((resolve, reject) => {
+        const el = document.createElement('script');
+        el.src = src; el.async = true; el.crossOrigin = 'anonymous';
+        if (integrity) el.integrity = integrity;
+        el.onload = () => resolve();
+        el.onerror = () => { el.remove(); delete scriptLoads[src]; reject(new Error('load ' + src)); };
+        document.head.appendChild(el);
+      });
+    }
+    return scriptLoads[src];
   }
 
   async function getDecoder() {
@@ -707,7 +839,7 @@ Respond with ONLY a JSON object:
         }
       } catch (e) { /* fall through to ZXing */ }
     }
-    await loadScript(CONFIG.zxingUrl);
+    await loadScript(CONFIG.zxingUrl, CONFIG.zxingIntegrity);
     const Z = window.ZXing;
     if (!Z || !Z.MultiFormatReader) throw new Error('scanner');
     const hints = new Map();
@@ -725,45 +857,66 @@ Respond with ONLY a JSON object:
   }
 
   async function startCamera() {
+    if (scanner.starting || scanner.stream) return; // ignore double taps
     const video = $('#scan-video');
     const wrap = $('#scanner-wrap');
-    if (!video || !wrap) return;
+    const btn = $('#btn-start-camera');
+    if (!video || !wrap || !btn) return;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast(t('cameraDenied')); return; }
-    let decode;
+    const session = ++scanner.session;
+    const cancelled = () => session !== scanner.session || !video.isConnected;
+    scanner.starting = true;
+    btn.disabled = true;
     try {
-      announce(t('scannerLoading'));
-      decode = await getDecoder();
-    } catch (e) { toast(t('scannerUnavailable')); return; }
-    try {
-      scanner.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
-    } catch (e) { toast(t('cameraDenied')); return; }
-    video.srcObject = scanner.stream;
-    video.setAttribute('playsinline', '');
-    await video.play().catch(() => {});
-    wrap.hidden = false;
-    $('#btn-start-camera').hidden = true;
-    announce(t('scanHint'));
-    scanner.canvas = scanner.canvas || document.createElement('canvas');
-    scanner.timer = setInterval(async () => {
-      if (scanner.busy || !video.videoWidth) return;
-      scanner.busy = true;
+      let decode, stream;
       try {
-        const c = scanner.canvas;
-        const scale = Math.min(1, 960 / video.videoWidth);
-        c.width = Math.round(video.videoWidth * scale);
-        c.height = Math.round(video.videoHeight * scale);
-        c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
-        const code = await decode(c);
-        if (code) {
-          stopCamera();
-          if (navigator.vibrate) navigator.vibrate(120);
-          handleCode(code);
-        }
-      } finally { scanner.busy = false; }
-    }, 350);
+        announce(t('scannerLoading'));
+        decode = await getDecoder();
+      } catch (e) { if (!cancelled()) toast(t('scannerUnavailable')); return; }
+      if (cancelled()) return;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+      } catch (e) { if (!cancelled()) toast(t('cameraDenied')); return; }
+      if (cancelled()) { stream.getTracks().forEach((tr) => tr.stop()); return; } // user left meanwhile
+      scanner.stream = stream;
+      video.srcObject = stream;
+      video.setAttribute('playsinline', '');
+      // not awaited: play() can stay pending until the first frame arrives,
+      // and the controls (incl. "close camera") must be visible meanwhile
+      video.play().catch(() => {});
+      wrap.hidden = false;
+      btn.hidden = true;
+      announce(t('scanHint'));
+      scanner.canvas = scanner.canvas || document.createElement('canvas');
+      clearInterval(scanner.timer);
+      scanner.timer = setInterval(() => scanFrame(video, decode, session), 350);
+    } finally {
+      if (session === scanner.session) scanner.starting = false;
+      btn.disabled = false;
+    }
+  }
+
+  async function scanFrame(video, decode, session) {
+    if (session !== scanner.session || scanner.busy || !video.videoWidth) return;
+    scanner.busy = true;
+    try {
+      const c = scanner.canvas;
+      const scale = Math.min(1, 960 / video.videoWidth);
+      c.width = Math.round(video.videoWidth * scale);
+      c.height = Math.round(video.videoHeight * scale);
+      c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
+      const code = await decode(c);
+      if (code && session === scanner.session) {
+        stopCamera();
+        if (navigator.vibrate) navigator.vibrate(120);
+        handleCode(code);
+      }
+    } finally { scanner.busy = false; }
   }
 
   function stopCamera() {
+    scanner.session++;
+    scanner.starting = false;
     clearInterval(scanner.timer);
     scanner.timer = null;
     if (scanner.stream) scanner.stream.getTracks().forEach((tr) => tr.stop());
@@ -801,34 +954,45 @@ Respond with ONLY a JSON object:
   // Voice search & read-aloud
   // ------------------------------------------------------------------
   let recog = null;
+  // called on every navigation: a late result must not land on another screen
+  function stopVoice() {
+    if (!recog) return;
+    const r = recog;
+    recog = null;
+    r.onresult = null;
+    r.onerror = null;
+    try { r.abort(); } catch (e) { /* ignore */ }
+  }
   function startVoice(btn, onText) {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) { toast(t('voiceUnsupported')); return; }
     if (recog) { recog.stop(); return; }
-    recog = new SR();
-    recog.lang = t('speechLang');
-    recog.interimResults = false;
-    recog.maxAlternatives = 4;
+    const r = new SR();
+    recog = r;
+    r.lang = t('speechLang');
+    r.interimResults = false;
+    r.maxAlternatives = 4;
     btn.setAttribute('aria-pressed', 'true');
     const label = btn.querySelector('.btn-label');
     if (label) label.textContent = t('voiceStop');
     announce(t('listening'));
     toast(t('listening'));
-    recog.onresult = (e) => {
+    r.onresult = (e) => {
+      if (recog !== r || !btn.isConnected) return;
       const alts = Array.from(e.results[0] || []).map((a) => a.transcript.trim()).filter(Boolean);
       // prefer the alternative that matches a medicine in the database
       const best = alts.find((a) => searchDrugs(a).matches.length) || alts[0];
       if (best) { announce(t('heard', { q: best })); onText(best); }
     };
-    recog.onerror = (e) => {
+    r.onerror = (e) => {
       toast(e.error === 'not-allowed' || e.error === 'service-not-allowed' ? t('voiceDenied') : t('voiceError'));
     };
-    recog.onend = () => {
-      recog = null;
+    r.onend = () => {
+      if (recog === r) recog = null;
       btn.setAttribute('aria-pressed', 'false');
       if (label) label.textContent = t('voiceBtn');
     };
-    try { recog.start(); } catch (e) { recog = null; btn.setAttribute('aria-pressed', 'false'); toast(t('voiceError')); }
+    try { r.start(); } catch (e) { recog = null; btn.setAttribute('aria-pressed', 'false'); toast(t('voiceError')); }
   }
 
   let speaking = false;
@@ -875,9 +1039,14 @@ Respond with ONLY a JSON object:
     const h = currentHash().replace(/^#\/?/, '');
     const [path, qs] = h.split('?');
     const parts = path.split('/').filter(Boolean);
-    return { name: parts[0] || 'home', arg: parts[1] ? decodeURIComponent(parts[1]) : null, params: new URLSearchParams(qs || '') };
+    return { name: parts[0] || 'home', arg: parts[1] ? safeDecode(parts[1]) : null, params: new URLSearchParams(qs || '') };
+  }
+  function safeDecode(x) {
+    try { return decodeURIComponent(x); } catch (e) { return x; } // malformed %-escape in a shared link
   }
   window.addEventListener('hashchange', () => {
+    // leaving the screen abandons any running AI request
+    if (aiJob) { cancelAiJob(); hideOverlay(); }
     const h = currentHash();
     if (navStack.length > 1 && navStack[navStack.length - 2] === h) navStack.pop();
     else if (navStack[navStack.length - 1] !== h) navStack.push(h);
@@ -894,17 +1063,25 @@ Respond with ONLY a JSON object:
   function render(moveFocus) {
     stopCamera();
     stopSpeaking();
+    stopVoice();
     const r = parseRoute();
     let title = t('appName');
-    switch (r.name) {
-      case 'search': title = renderSearch(r.params.get('q') || ''); break;
-      case 'identify': title = renderIdentify(); break;
-      case 'scan': title = renderScan(); break;
-      case 'interactions': title = renderInteractions(); break;
-      case 'drug': title = renderDrugRoute(r.arg); break;
-      case 'result': title = renderResult(); break;
-      case 'notfound': title = renderNotFound(); break;
-      default: title = renderHome();
+    try {
+      switch (r.name) {
+        case 'search': title = renderSearch(r.params.get('q') || ''); break;
+        case 'identify': title = renderIdentify(); break;
+        case 'scan': title = renderScan(); break;
+        case 'interactions': title = renderInteractions(); break;
+        case 'drug': title = renderDrugRoute(r.arg); break;
+        case 'result': title = renderResult(); break;
+        case 'notfound': title = renderNotFound(); break;
+        default: title = renderHome();
+      }
+    } catch (err) {
+      // never leave the user on a blank screen
+      console.error(err);
+      state.fallback = { reason: 'not_found', mode: 'name' };
+      title = renderNotFound();
     }
     document.title = title === t('appName') ? `${title} · AI Pill` : `${title} · ${t('appName')}`;
     if (moveFocus) {
@@ -976,14 +1153,28 @@ Respond with ONLY a JSON object:
   }
 
   // ----- search -----
-  function drugResultItem(d, sub) {
-    const look = (d.looks || [])[0];
+  // One row linking to a drug. opts: sub (second line), look (pill drawing to
+  // show, labelled for screen readers), prefix (e.g. "Possible match").
+  function drugResultItem(d, opts = {}) {
+    const look = opts.look || (d.looks || [])[0];
+    const title = `${opts.prefix ? opts.prefix + ': ' : ''}${tr(d.generic)} ${d.strength}`;
+    const sub = opts.sub || (d.brands || []).filter(isLatin).join(', ');
     return `<a class="result-item" href="#/drug/${d.id}">
-      <span class="ri-pill">${look ? pillSvg(look) : ''}</span>
-      <span class="ri-main"><span class="ri-title">${esc(tr(d.generic))} ${esc(d.strength)}</span>
-      <span class="ri-sub">${esc(sub || (d.brands || []).filter(isLatin).join(', '))}</span></span>
+      <span class="ri-pill">${look ? pillSvg(look, opts.look ? lookLabel(look) : null) : ''}</span>
+      <span class="ri-main"><span class="ri-title">${esc(title)}</span>
+      <span class="ri-sub">${esc(sub)}</span></span>
       <span class="cta-arrow" aria-hidden="true">›</span>
     </a>`;
+  }
+
+  // The "what to do instead" buttons shown whenever a lookup fails.
+  function fallbackActions({ photoMode = null, photoLabel = '', typeName = true, byShape = false } = {}) {
+    const out = [];
+    if (photoMode) out.push(`<button type="button" class="btn btn-primary btn-block" data-action="photo" data-mode="${photoMode}">${icon('camera')}<span>${esc(photoLabel)}</span></button>`);
+    if (typeName) out.push(`<a class="btn btn-secondary btn-block" href="#/search">${icon('search')}<span>${esc(t('typeInstead'))}</span></a>`);
+    if (byShape) out.push(`<a class="btn btn-secondary btn-block" href="#/identify">${icon('pill')}<span>${esc(t('byShape'))}</span></a>`);
+    out.push(`<button type="button" class="btn btn-secondary btn-block" data-action="pharmacist">${icon('chat')}<span>${esc(t('askPharmacist'))}</span></button>`);
+    return `<div class="stack">${out.join('')}</div>`;
   }
 
   function renderSearch(q) {
@@ -1023,26 +1214,28 @@ Respond with ONLY a JSON object:
       return;
     }
     const { matches, suggestions } = searchDrugs(query);
-    if (submitted && matches.length && (matches.length === 1 || matches[0].score >= 100 && matches[1].score < 100)) {
-      go('#/drug/' + matches[0].drug.id);
+    // open a drug directly only for an exact name; partial or category matches
+    // (e.g. "Atorvastatin" ⊃ "statin") must be chosen by the user
+    const exact = exactDrug(matches);
+    if (submitted && exact) {
+      go('#/drug/' + exact.id);
       return;
     }
     if (matches.length) {
       box.innerHTML = `<section class="card"><h2>${esc(t('resultsCount', { n: matches.length }))}</h2>
-        <ul class="suggest-list">${matches.map((m) => `<li>${drugResultItem(m.drug, isLatin(m.term) || m.term === tr(m.drug.generic) ? '' : m.term)}</li>`).join('')}</ul></section>`;
+        <ul class="suggest-list">${matches.map((m) => `<li>${drugResultItem(m.drug, { sub: isLatin(m.term) || m.term === tr(m.drug.generic) ? '' : m.term })}</li>`).join('')}</ul></section>`;
       return;
     }
     let html = `<div class="banner banner-warn" role="status"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('noResult', { q: query }))}</div></div>`;
     if (suggestions.length) {
-      html += `<section class="card"><h2>${esc(t('didYouMean'))}</h2><ul class="suggest-list">${suggestions.map((s) => `<li>${drugResultItem(s.drug, s.fuzzyTerm)}</li>`).join('')}</ul></section>`;
+      html += `<section class="card"><h2>${esc(t('didYouMean'))}</h2><ul class="suggest-list">${suggestions.map((x) => `<li>${drugResultItem(x.drug, { sub: x.fuzzyTerm })}</li>`).join('')}</ul></section>`;
     }
     html += `<section class="card"><ul class="tips">${t('noResultTips').map((x, i) => `<li><span class="ico" aria-hidden="true">${['🔤', '💊', '📷'][i] || '•'}</span><span>${esc(x)}</span></li>`).join('')}</ul>
       <div class="stack">
         ${state.apiKey
           ? `<button type="button" class="btn btn-primary btn-block" data-action="ask-ai" data-q="${esc(query)}">${icon('sparkle')}<span>${esc(t('askAi', { q: query }))}</span></button>`
           : `<p class="help">${esc(t('askAiNeedKey'))}</p>`}
-        <a class="btn btn-secondary btn-block" href="#/scan">${icon('camera')}<span>${esc(t('photoInstead'))}</span></a>
-        <button type="button" class="btn btn-secondary btn-block" data-action="pharmacist">${icon('chat')}<span>${esc(t('askPharmacist'))}</span></button>
+        ${fallbackActions({ photoMode: 'package', photoLabel: t('photoInstead'), typeName: false })}
       </div></section>`;
     box.innerHTML = html;
   }
@@ -1094,19 +1287,17 @@ Respond with ONLY a JSON object:
     const list = identifyMatches(sel);
     if (!list.length) {
       box.innerHTML = `<section class="card"><div class="banner banner-warn"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('noCandidates'))}</div></div>
-        <div class="stack"><button type="button" class="btn btn-primary btn-block" data-action="photo" data-mode="pill">${icon('camera')}<span>${esc(t('photoPill'))}</span></button>
-        <a class="btn btn-secondary btn-block" href="#/search">${icon('search')}<span>${esc(t('typeInstead'))}</span></a>
-        <button type="button" class="btn btn-secondary btn-block" data-action="pharmacist">${icon('chat')}<span>${esc(t('askPharmacist'))}</span></button></div></section>`;
+        ${fallbackActions({ photoMode: 'pill', photoLabel: t('photoPill') })}</section>`;
       return;
     }
     box.innerHTML = `<section class="card">
       <h2>${esc(t('candidates'))} (${list.length})</h2>
       <div class="banner banner-warn"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('candidateWarn'))}</div></div>
-      <ul class="suggest-list">${list.map(({ drug, look }) => `<li><a class="result-item" href="#/drug/${drug.id}">
-        <span class="ri-pill">${pillSvg(look, lookLabel(look))}</span>
-        <span class="ri-main"><span class="ri-title">${esc(t('possibleMatch'))}: ${esc(tr(drug.generic))} ${esc(drug.strength)}</span>
-        <span class="ri-sub">${esc(lookLabel(look))} · ${esc((drug.brands || []).filter(isLatin).join(', '))}</span></span>
-        <span class="cta-arrow" aria-hidden="true">›</span></a></li>`).join('')}</ul>
+      <ul class="suggest-list">${list.map(({ drug, look }) => `<li>${drugResultItem(drug, {
+        look,
+        prefix: t('possibleMatch'),
+        sub: `${lookLabel(look)} · ${(drug.brands || []).filter(isLatin).join(', ')}`
+      })}</li>`).join('')}</ul>
     </section>`;
   }
 
@@ -1141,13 +1332,14 @@ Respond with ONLY a JSON object:
     if (!r) { box.innerHTML = ''; return; }
     if (!r.code) {
       box.innerHTML = `<section class="card"><div class="banner banner-warn" role="alert"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('barcodeNoDecode'))}</div></div>
-        <button type="button" class="btn btn-secondary btn-block" data-action="photo" data-mode="package">${icon('camera')}<span>${esc(t('photoPackage'))}</span></button></section>`;
+        ${fallbackActions({ photoMode: 'package', photoLabel: t('photoPackage') })}</section>`;
       return;
     }
     const drug = r.drugId ? drugById(r.drugId) : null;
     let html = `<section class="card stack"><h2>${esc(t('codeFound'))}</h2><div class="code-box">${esc(r.code)}</div>`;
     if (drug) {
-      html += `<div class="banner banner-safe"><span class="ico">${icon('check', 26)}</span><div>${esc(t('codeMatchedText'))}</div></div>${drugResultItem(drug)}`;
+      // a name in free text is a lead, not an identification: info, not green
+      html += `<div class="banner banner-info"><span class="ico">${icon('info', 26)}</span><div>${esc(t('codeMatchedText'))}</div></div>${drugResultItem(drug)}`;
     } else {
       html += `<div class="banner banner-warn"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('codeNotInDb'))}</div></div>`;
     }
@@ -1160,11 +1352,7 @@ Respond with ONLY a JSON object:
       if (!official) html += `<div class="banner banner-warn"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('linkWarn', { host: r.host }))}</div></div>`;
       html += `<a class="btn btn-secondary btn-block" href="${esc(r.url)}" target="_blank" rel="noopener noreferrer nofollow">${icon('external')}<span>${esc(t('openLink'))}</span></a>`;
     }
-    if (!drug) {
-      html += `<button type="button" class="btn btn-primary btn-block" data-action="photo" data-mode="package">${icon('camera')}<span>${esc(t('photoPackage'))}</span></button>
-        <a class="btn btn-secondary btn-block" href="#/search">${icon('search')}<span>${esc(t('typeInstead'))}</span></a>
-        <button type="button" class="btn btn-secondary btn-block" data-action="pharmacist">${icon('chat')}<span>${esc(t('askPharmacist'))}</span></button>`;
-    }
+    if (!drug) html += fallbackActions({ photoMode: 'package', photoLabel: t('photoPackage') });
     box.innerHTML = html + '</section>';
     box.scrollIntoView({ block: 'nearest' });
   }
@@ -1185,7 +1373,7 @@ Respond with ONLY a JSON object:
     const a = state.analysis;
     if (!a) { go('#/'); return t('appName'); }
     const drug = a.dbId ? drugById(a.dbId) : null;
-    return renderDrugView({ kind: drug ? 'db' : 'ai', drug, ai: a.ai, demo: a.demo, photo: a.photo, compareId: '__result', fromAi: true });
+    return renderDrugView({ kind: drug ? 'db' : 'ai', drug, ai: a.ai, demo: a.demo, guess: !!a.guess, photo: a.photo, compareId: '__result', fromAi: true });
   }
 
   function listItems(items) {
@@ -1242,7 +1430,11 @@ Respond with ONLY a JSON object:
 
   function speechText(v, vm) {
     const parts = [v.generic, v.brands ? `${t('brandLabel')}: ${v.brands}` : '', v.strength];
-    if (vm.ai && vm.ai.expiry_date) {
+    // spoken warnings first: a listener cannot see the orange banners
+    if (vm.demo) parts.unshift(t('demoBadge'));
+    else if (vm.kind === 'ai') parts.unshift(t('aiUnverified'));
+    else if (vm.fromAi && vm.guess) parts.unshift(t('aiLowConfidence', { n: vm.ai && vm.ai.confidence !== null ? vm.ai.confidence : '?' }));
+    if (vm.ai && vm.ai.expiry_date && !vm.demo) {
       const exp = parseExpiry(vm.ai.expiry_date);
       if (exp && expiryStatus(exp) === 'expired') parts.push(t('expired'));
     }
@@ -1259,18 +1451,24 @@ Respond with ONLY a JSON object:
   function renderDrugView(vm) {
     const v = viewData(vm);
     const ai = vm.ai;
-    const exp = ai && ai.expiry_date ? parseExpiry(ai.expiry_date) : null;
+    // demo data has a made-up expiry date: never judge it as (not) expired
+    const exp = ai && ai.expiry_date && !vm.demo ? parseExpiry(ai.expiry_date) : null;
     const inList = state.ixList.some((x) => (vm.kind === 'db' ? x.id === vm.drug.id : x.name === v.generic));
 
-    // trust banner
+    // Trust banner. Green is used only when a real AI analysis was confident
+    // and its answer matched the database; demo data and low-confidence
+    // guesses are flagged in orange so they cannot pass as an identification.
+    const identityCertain = vm.kind === 'db' && !vm.demo && !vm.guess;
     let trust = '';
     if (vm.demo) {
-      trust += `<div class="banner banner-info" role="note"><span class="ico">${icon('info', 26)}</span><div>${esc(t('demoBadge'))}</div></div>`;
-    }
-    if (vm.kind === 'ai') {
-      trust += `<div class="banner banner-warn" role="note"><span class="ico">${icon('sparkle', 26)}</span><div>${esc(t('aiUnverified'))}<small>${esc(t('aiUnverifiedSub'))}</small></div></div>`;
+      trust = `<div class="banner banner-warn" role="alert"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('demoBadge'))}<small>${esc(t('demoBadgeSub'))}</small>
+        <button type="button" class="btn btn-secondary" style="margin-top:.5rem" data-action="settings">${esc(t('demoSetup'))}</button></div></div>`;
+    } else if (vm.kind === 'ai') {
+      trust = `<div class="banner banner-warn" role="note"><span class="ico">${icon('sparkle', 26)}</span><div>${esc(t('aiUnverified'))}<small>${esc(t('aiUnverifiedSub'))}</small></div></div>`;
+    } else if (vm.fromAi && vm.guess) {
+      trust = `<div class="banner banner-warn" role="alert"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('aiLowConfidence', { n: ai && ai.confidence !== null ? ai.confidence : '?' }))}<small>${esc(t('aiLowConfidenceSub'))}</small></div></div>`;
     } else if (vm.fromAi) {
-      trust += `<div class="banner banner-safe" role="note"><span class="ico">${icon('shield', 26)}</span><div>${esc(t('aiMatchedDb'))}${ai && ai.confidence !== null ? `<small>${esc(t('confidence', { n: ai.confidence }))}</small>` : ''}</div></div>`;
+      trust = `<div class="banner banner-safe" role="note"><span class="ico">${icon('shield', 26)}</span><div>${esc(t('aiMatchedDb'))}${ai && ai.confidence !== null ? `<small>${esc(t('confidence', { n: ai.confidence }))}</small>` : ''}</div></div>`;
     }
 
     // reference image: real photo when available, otherwise an illustration
@@ -1282,18 +1480,20 @@ Respond with ONLY a JSON object:
       : `<span class="muted" style="padding:.5rem;text-align:center">${esc(t('noPhotoYet'))}</span>`;
 
     const badges = [
-      vm.kind === 'db' ? `<span class="badge badge-safe">${icon('shield', 18)}${esc(t('verified'))}</span>` : `<span class="badge badge-warn">${icon('sparkle', 18)}AI</span>`,
+      vm.demo ? `<span class="badge badge-warn">${icon('warn', 18)}${esc(t('demoShort'))}</span>`
+        : identityCertain ? `<span class="badge badge-safe">${icon('shield', 18)}${esc(t('verified'))}</span>`
+          : `<span class="badge badge-warn">${icon('sparkle', 18)}AI</span>`,
       v.strength ? `<span class="badge badge-info">${esc(t('strengthLabel'))}: ${esc(v.strength)}</span>` : '',
       v.form ? `<span class="badge badge-info">${esc(v.form)}</span>` : ''
     ].join('');
 
     const aiFacts = ai && vm.fromAi && (ai.label_text || ai.pill_count !== null || ai.expiry_date || vm.photo) ? `
       <section class="section section-info">
-        <h2>${icon('sparkle', 26)}<span>${esc(t('aiReadTitle'))}</span></h2>
+        <h2>${icon('sparkle', 26)}<span>${esc(vm.demo ? t('demoFactsTitle') : t('aiReadTitle'))}</span></h2>
         <div class="ai-facts">
           <div class="fact"><div class="fact-label">${esc(t('pillCountLbl'))}</div><div class="fact-value fact-big">${esc(ai.pill_count !== null ? t('pillCountUnit', { n: ai.pill_count }) : t('cannotCount'))}</div></div>
           ${exp ? `<div class="fact"><div class="fact-label">${esc(t('expiryLbl'))}</div><div class="fact-value">${esc(formatExpiry(exp))}</div></div>` : ''}
-          ${ai.confidence !== null ? `<div class="fact"><div class="fact-label">AI</div><div class="fact-value">${esc(t('confidence', { n: ai.confidence }))}</div></div>` : ''}
+          ${ai.confidence !== null && !vm.demo ? `<div class="fact"><div class="fact-label">AI</div><div class="fact-value">${esc(t('confidence', { n: ai.confidence }))}</div></div>` : ''}
         </div>
         ${ai.label_text ? `<div class="fact" style="margin-top:.75rem"><div class="fact-label">${esc(t('labelTextLbl'))}</div><div class="fact-value label-text">${esc(ai.label_text)}</div></div>` : ''}
       </section>` : '';
@@ -1416,9 +1616,9 @@ Respond with ONLY a JSON object:
   function addToIxList(item) {
     const name = String(item.name || '').trim().slice(0, 120);
     if (!name) return false;
-    const dupName = state.ixList.some((x) => norm(x.name) === norm(name));
-    const dupId = item.id && state.ixList.some((x) => x.id === item.id && norm(x.name) === norm(name));
-    if (dupName || dupId) { toast(t('ixAlready')); return false; }
+    // same typed name twice is a mistake; the same drug under two different
+    // names (Sara + Tylenol) is kept so the duplicate-ingredient check can warn
+    if (state.ixList.some((x) => norm(x.name) === norm(name))) { toast(t('ixAlready')); return false; }
     state.ixList.push({ name, id: item.id || null });
     saveIx();
     state.ixResult = null; state.ixAi = null;
@@ -1459,9 +1659,9 @@ Respond with ONLY a JSON object:
   function submitIx(value) {
     const q = String(value || '').trim();
     if (!q) return;
-    const { matches } = searchDrugs(q);
-    if (matches.length && matches[0].score >= 80) {
-      if (addToIxList({ name: q, id: matches[0].drug.id })) clearIxInput();
+    const exact = exactDrug(searchDrugs(q).matches);
+    if (exact) {
+      if (addToIxList({ name: q, id: exact.id })) clearIxInput();
       return;
     }
     renderIxSuggest(q, true);
@@ -1469,7 +1669,8 @@ Respond with ONLY a JSON object:
   function clearIxInput() {
     const input = $('#ix-input');
     if (input) { input.value = ''; input.focus(); }
-    $('#ix-suggest').innerHTML = '';
+    const suggest = $('#ix-suggest');
+    if (suggest) suggest.innerHTML = '';
     renderIxList();
     renderIxResults();
   }
@@ -1557,25 +1758,30 @@ Respond with ONLY a JSON object:
 
   async function runIxAi() {
     if (!state.apiKey) { openSettings(); return; }
+    const job = beginAiJob();
     showOverlay(t('searchingAi'), t('analyzingSub'));
     try {
-      const raw = await geminiCall([{ text: interactionPrompt(state.ixList.map((x) => x.name)) }]);
-      const list = Array.isArray(raw.interactions) ? raw.interactions : [];
+      const raw = await geminiCall([{ text: interactionPrompt(state.ixList.map((x) => x.name)) }], job.controller.signal);
+      const obj = Array.isArray(raw) ? { interactions: raw } : raw && typeof raw === 'object' ? raw : {};
+      const list = Array.isArray(obj.interactions) ? obj.interactions.filter((x) => x && typeof x === 'object') : [];
       state.ixAi = {
         interactions: list.slice(0, 20).map((x) => ({
           drugs: (Array.isArray(x.drugs) ? x.drugs : []).map((d) => String(d).slice(0, 120)).slice(0, 4),
           level: ['major', 'moderate', 'minor'].includes(x.level) ? x.level : 'moderate',
           explanation: String(x.explanation || '').slice(0, 800)
         })).filter((x) => x.drugs.length),
-        note: String(raw.note || '').slice(0, 600)
+        note: String(obj.note || '').slice(0, 600)
       };
+      endAiJob(job);
       hideOverlay();
       renderIxResults();
-      $('#ix-results').scrollIntoView({ block: 'start' });
+      const box = $('#ix-results');
+      if (box) box.scrollIntoView({ block: 'start' });
     } catch (err) {
-      hideOverlay();
-      console.error(err);
-      toast(aiErrorMessage(err));
+      handleAiFailure(job, err);
+    } finally {
+      if (aiJob === job) hideOverlay();
+      endAiJob(job);
     }
   }
 
@@ -1609,14 +1815,14 @@ Respond with ONLY a JSON object:
   function applyPrefs() {
     const root = document.documentElement;
     root.lang = t('htmlLang');
-    root.style.fontSize = FONT_SIZES[state.fontIdx] + 'px';
+    root.style.fontSize = FONT_SCALES[state.fontIdx] + '%';
     root.dataset.contrast = state.contrast === 'high' ? 'high' : 'normal';
     $('meta[name="theme-color"]').setAttribute('content', state.contrast === 'high' ? '#000000' : '#3d5a1e');
     $$('[data-i18n]').forEach((el) => { const v = t(el.dataset.i18n); if (typeof v === 'string') el.textContent = v; });
     $$('[data-i18n-aria]').forEach((el) => { const v = t(el.dataset.i18nAria); if (typeof v === 'string') el.setAttribute('aria-label', v); });
     $('#lang-select').value = state.lang;
     $('#btn-font-down').disabled = state.fontIdx <= 0;
-    $('#btn-font-up').disabled = state.fontIdx >= FONT_SIZES.length - 1;
+    $('#btn-font-up').disabled = state.fontIdx >= FONT_SCALES.length - 1;
     $('#btn-contrast').setAttribute('aria-pressed', String(state.contrast === 'high'));
   }
 
@@ -1633,12 +1839,13 @@ Respond with ONLY a JSON object:
     state.fontIdx = Math.max(0, state.fontIdx - 1); store.set('fontIdx', state.fontIdx); applyPrefs();
   });
   $('#btn-font-up').addEventListener('click', () => {
-    state.fontIdx = Math.min(FONT_SIZES.length - 1, state.fontIdx + 1); store.set('fontIdx', state.fontIdx); applyPrefs();
+    state.fontIdx = Math.min(FONT_SCALES.length - 1, state.fontIdx + 1); store.set('fontIdx', state.fontIdx); applyPrefs();
   });
   $('#btn-contrast').addEventListener('click', () => {
     state.contrast = state.contrast === 'high' ? 'normal' : 'high'; store.set('contrast', state.contrast); applyPrefs();
   });
   $('#btn-settings').addEventListener('click', openSettings);
+  $('#btn-cancel-ai').addEventListener('click', () => { cancelAiJob(); hideOverlay(); });
   $('#btn-save-settings').addEventListener('click', () => {
     state.apiKey = $('#api-key').value.trim();
     state.model = $('#api-model').value.trim() || CONFIG.defaultModel;
@@ -1720,14 +1927,12 @@ Respond with ONLY a JSON object:
   });
 
   // drag & drop a photo onto the identify / scan screens (desktop)
-  document.addEventListener('dragover', (e) => {
-    const r = parseRoute().name;
-    if (r === 'identify' || r === 'scan') e.preventDefault();
-  });
+  // (files dropped elsewhere are ignored instead of opening in the tab)
+  document.addEventListener('dragover', (e) => e.preventDefault());
   document.addEventListener('drop', (e) => {
+    e.preventDefault();
     const r = parseRoute().name;
     if (r !== 'identify' && r !== 'scan') return;
-    e.preventDefault();
     const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
     if (!file) return;
     state.pendingPhoto = { mode: r === 'scan' ? 'package' : 'pill' };

@@ -175,6 +175,7 @@
     gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/>',
     lifebuoy: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><path d="m4.93 4.93 4.24 4.24"/><path d="m14.83 9.17 4.24-4.24"/><path d="m14.83 14.83 4.24 4.24"/><path d="m9.17 14.83-4.24 4.24"/>',
     chevron: '<path d="m9 18 6-6-6-6"/>',
+    keyboard: '<rect x="2" y="6" width="20" height="13" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 15h10"/>',
     allergy: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v4"/><path d="M12 16h.01"/>'
   };
   function icon(name, size = 24) {
@@ -1110,41 +1111,42 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   // ------------------------------------------------------------------
   // Screens
   // ------------------------------------------------------------------
-  function sosCard() {
-    return `<section class="sos" aria-labelledby="sos-h">
-      <span class="tile tile-danger">${icon('danger')}</span>
-      <div style="flex:1;min-width:0">
-        <strong id="sos-h">${esc(t('emergencyTitle'))}</strong>
-        <p>${esc(t('emergencyText'))}</p>
-        <div class="btn-row">
-          <a class="btn btn-call btn-sm" href="tel:${CONFIG.emergencyTel}">${icon('phone')}<span>${esc(t('call1669'))}</span></a>
-          <a class="btn btn-call-outline btn-sm" href="tel:${CONFIG.poisonTel}">${icon('phone')}<span>${esc(t('call1367'))}</span></a>
-        </div>
-      </div>
-    </section>`;
+  // 2D scene behind the top of the home screen (decorative)
+  function heroArt() {
+    return `<svg viewBox="0 0 390 280" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false">
+      <rect width="390" height="280" fill="#DDF1E8"/>
+      <circle cx="318" cy="96" r="58" fill="#FFE7A8"/>
+      <circle cx="40" cy="96" r="22" fill="#FFFFFF" opacity=".7"/><circle cx="64" cy="90" r="16" fill="#FFFFFF" opacity=".7"/>
+      <path d="M0 214 C80 184 160 240 250 216 C310 200 350 206 390 196 L390 280 L0 280 Z" fill="#BFE6D3"/>
+      <path d="M22 232 C14 188 38 156 66 142 C68 184 52 212 22 232 Z" fill="#7CC5A1"/>
+      <path d="M34 238 C56 206 90 198 116 204 C96 230 66 242 34 238 Z" fill="#5FB08A"/>
+      <rect x="84" y="138" width="70" height="96" rx="14" fill="#F2994A"/><rect x="78" y="122" width="82" height="24" rx="8" fill="#0E1B17"/>
+      <rect x="94" y="162" width="50" height="42" rx="6" fill="#FFFFFF"/><rect x="102" y="172" width="34" height="6" rx="3" fill="#F2994A"/><rect x="102" y="184" width="24" height="6" rx="3" fill="#BFE6D3"/>
+      <rect x="192" y="74" width="118" height="196" rx="24" fill="#0E1B17"/><rect x="200" y="86" width="102" height="172" rx="17" fill="#FFFFFF"/>
+      <path d="M216 118 v-14 h14 M272 104 h14 v14 M286 214 v14 h-14 M230 228 h-14 v-14" stroke="#047857" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <g transform="rotate(-30 251 166)"><rect x="217" y="150" width="68" height="32" rx="16" fill="#F4CF3A"/><path d="M251 150 H233 a16 16 0 0 0 0 32 H251 Z" fill="#E9785F"/><rect x="223" y="156" width="18" height="6" rx="3" fill="#FFFFFF" opacity=".6"/></g>
+      <rect x="216" y="202" width="70" height="4" rx="2" fill="#047857" opacity=".45"/>
+      <g transform="rotate(12 344 232)"><rect x="306" y="206" width="78" height="54" rx="10" fill="#FFFFFF" stroke="#9ED5BA" stroke-width="3"/>
+        <circle cx="324" cy="222" r="8" fill="#DCEBFA"/><circle cx="345" cy="222" r="8" fill="#DCEBFA"/><circle cx="366" cy="222" r="8" fill="#DCEBFA"/>
+        <circle cx="324" cy="244" r="8" fill="#DCEBFA"/><circle cx="345" cy="244" r="8" fill="#FFFFFF" stroke="#9ED5BA" stroke-width="2"/><circle cx="366" cy="244" r="8" fill="#DCEBFA"/></g>
+      <circle cx="172" cy="250" r="10" fill="#FFFFFF" stroke="#0E1B17" stroke-width="2"/><line x1="172" y1="241" x2="172" y2="259" stroke="#0E1B17" stroke-width="1.5"/>
+      <ellipse cx="62" cy="258" rx="14" ry="8" fill="#FFFFFF" stroke="#0E1B17" stroke-width="2"/>
+    </svg>`;
   }
+  const IX_ART = `<svg viewBox="0 0 96 52" aria-hidden="true" focusable="false"><circle cx="22" cy="26" r="18" fill="#F3A3BF" stroke="#0E1B17" stroke-width="2"/><circle cx="74" cy="26" r="14" fill="#FFFFFF" stroke="#0E1B17" stroke-width="2"/><path d="M50 8 L42 28 H50 L45 44 L58 22 H50 L55 8 Z" fill="#E9785F" stroke="#0E1B17" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
+  const HELP_ART = `<svg viewBox="0 0 96 52" aria-hidden="true" focusable="false"><path d="M8 10 a8 8 0 0 1 8 -8 h44 a8 8 0 0 1 8 8 v22 a8 8 0 0 1 -8 8 h-30 l-12 10 v-10 h-2 a8 8 0 0 1 -8 -8 Z" fill="#DCEBFA" stroke="#0E1B17" stroke-width="2" stroke-linejoin="round"/><rect x="33" y="10" width="10" height="24" rx="2" fill="#047857"/><rect x="26" y="17" width="24" height="10" rx="2" fill="#047857"/><circle cx="82" cy="36" r="12" fill="#FFE7A8" stroke="#0E1B17" stroke-width="2"/><path d="M77 36 l3 3 l6 -7" stroke="#0E1B17" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   function demoNotice() {
     if (state.apiKey) return '';
     return `<div class="pill-notice" role="note"><span>${esc(t('demoShortNotice'))}</span>
       <button type="button" class="btn btn-secondary btn-sm" data-action="settings">${esc(t('demoSetup'))}</button></div>`;
   }
-  function searchBar(q, autofocus, withMic = true) {
+  function searchBar(q, autofocus) {
     return `<form class="searchbar" id="search-form" role="search" autocomplete="off">
       ${icon('search')}
       <label class="sr-only" for="search-input">${esc(t('searchLabel'))}</label>
-      <input id="search-input" type="search" enterkeyhint="search" placeholder="${esc(withMic ? t('homeSearchPh') : t('homeTypePh'))}" value="${esc(q)}"${autofocus ? ' data-autofocus' : ''}>
-      ${withMic ? `<button type="button" class="round-btn btn-mic" data-action="voice" data-target="search-input" aria-pressed="false" aria-label="${esc(t('voiceBtn'))}">${icon('mic')}</button>` : ''}
+      <input id="search-input" type="search" enterkeyhint="search" placeholder="${esc(t('homeSearchPh'))}" value="${esc(q)}"${autofocus ? ' data-autofocus' : ''}>
+      <button type="button" class="round-btn btn-mic" data-action="voice" data-target="search-input" aria-pressed="false" aria-label="${esc(t('voiceBtn'))}">${icon('mic')}</button>
     </form>`;
-  }
-  // Large "tap and speak" button for the home screen. The labels swap while
-  // listening (data-label-on/off, data-sub-on/off are i18n keys).
-  function bigMicButton() {
-    return `<button type="button" class="voice-btn" data-action="voice" data-target="search-input" aria-pressed="false"
-        data-label-on="listening" data-label-off="voiceBigTitle" data-sub-on="voiceTapStop" data-sub-off="voiceBigSub">
-      <span class="mic-dot" aria-hidden="true">${icon('mic')}</span>
-      <span><span class="vb-title btn-label">${esc(t('voiceBigTitle'))}</span><span class="vb-sub btn-sub">${esc(t('voiceBigSub'))}</span></span>
-    </button>
-    <p id="voice-hint" class="help voice-hint" aria-live="polite"></p>`;
   }
   // On the search screen results update while typing; elsewhere Enter opens
   // the drug (exact name) or the search screen.
@@ -1168,45 +1170,33 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     else go('#/search' + (query ? '?q=' + encodeURIComponent(query) : ''));
   }
 
+  // Picture-first home: a 2D scene, three big picture buttons and short labels.
+  // The "speak" button swaps its label while listening (data-label-on/off are
+  // i18n keys read by startVoice).
   function renderHome() {
     const recent = state.recent.map(drugById).filter(Boolean);
     const ixCount = state.ixList.length;
     app.innerHTML = `
-      <div class="hello">
-        <h1 tabindex="-1">${esc(t('homeTitle'))}</h1>
-        <p>${esc(t('appTagline'))}</p>
-      </div>
-      ${searchBar('', false, false)}
-      ${bigMicButton()}
-      ${allergyCard()}
-      <section class="camera-card" aria-labelledby="cam-h">
-        <span class="cam-ico" aria-hidden="true">${icon('camera')}</span>
-        <h2 id="cam-h">${esc(t('takePhoto'))}</h2>
-        <p>${esc(t('takePhotoSub'))}</p>
-        <div class="btn-row">
-          <button type="button" class="btn btn-light" data-action="photo">${icon('camera')}<span>${esc(t('openCamera'))}</span></button>
-          <button type="button" class="btn btn-glass" data-action="photo" data-gallery="1">${icon('image')}<span>${esc(t('fromGallery'))}</span></button>
+      <div class="home-hero">${heroArt()}</div>
+      <div class="home-sheet">
+        <h1 class="home-title" tabindex="-1">${esc(t('homeTitle'))}</h1>
+        <div class="pic-actions">
+          <button type="button" class="pic-btn pic-primary" data-action="photo"><span class="pic-ico">${icon('camera')}</span><span class="pic-label">${esc(t('tileCamera'))}</span></button>
+          <button type="button" class="pic-btn pic-voice" data-action="voice" data-target="search-input" aria-pressed="false" data-label-on="listeningShort" data-label-off="tileSpeak"><span class="pic-ico">${icon('mic')}</span><span class="pic-label btn-label">${esc(t('tileSpeak'))}</span></button>
+          <a class="pic-btn pic-type" href="#/search"><span class="pic-ico">${icon('keyboard')}</span><span class="pic-label">${esc(t('tileType'))}</span></a>
         </div>
-      </section>
-      ${demoNotice()}
-      <div class="quick-grid">
-        <a class="quick" href="#/interactions">
-          <span class="tile tile-brand">${icon('layers')}</span>
-          <span class="quick-title">${esc(t('ctaIxTitle'))}</span>
-          <span class="quick-sub">${esc(t('ctaIxSub'))}</span>
-          ${ixCount ? `<span class="count-pill">${esc(t('ixBadgeCount', { n: ixCount }))}</span>` : ''}
-        </a>
-        <button type="button" class="quick" data-action="pharmacist">
-          <span class="tile tile-info">${icon('chat')}</span>
-          <span class="quick-title">${esc(t('askPharmacist'))}</span>
-          <span class="quick-sub">${esc(t('pharmSub'))}</span>
-        </button>
-      </div>
-      ${recent.length ? `<h2 class="section-label">${esc(t('recentTitle'))}</h2>
-        <div class="chips">${recent.map((d) => `<a class="chip" href="#/drug/${d.id}"><span class="chip-pill">${d.looks && d.looks[0] ? pillSvg(d.looks[0]) : ''}</span>${esc(tr(d.generic))}</a>`).join('')}</div>` : ''}
-      ${sosCard()}
-      <p class="trust-line">${icon('shield')}<span>${esc(t('noLogin'))}</span></p>`;
-    wireSearchForm(false);
+        <button type="button" class="gallery-link" data-action="photo" data-gallery="1">${icon('image')}<span>${esc(t('fromGallery'))}</span></button>
+        <p id="voice-hint" class="help voice-hint" aria-live="polite"></p>
+        ${allergyCard()}
+        <div class="pic-tiles">
+          <a class="pic-tile" href="#/interactions">${IX_ART}<span class="pic-tile-label">${esc(t('tabIx'))}</span>${ixCount ? `<span class="count-pill">${esc(t('ixBadgeCount', { n: ixCount }))}</span>` : ''}</a>
+          <button type="button" class="pic-tile" data-action="pharmacist">${HELP_ART}<span class="pic-tile-label">${esc(t('askPharmacistShort'))}</span></button>
+        </div>
+        ${demoNotice()}
+        ${recent.length ? `<h2 class="section-label">${esc(t('recentTitle'))}</h2>
+          <div class="chips">${recent.map((d) => `<a class="chip" href="#/drug/${d.id}"><span class="chip-pill">${d.looks && d.looks[0] ? pillSvg(d.looks[0]) : ''}</span>${esc(tr(d.generic))}</a>`).join('')}</div>` : ''}
+        <a class="sos-pill" href="tel:${CONFIG.emergencyTel}">${icon('phone')}<span>${esc(t('sosShort'))}</span></a>
+      </div>`;
     return t('appName');
   }
 
@@ -1285,23 +1275,22 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   // ----- allergies -----
   function allergyCard() {
     const list = state.allergies;
-    const asking = !list.length && !state.allergyNone;
-    let body;
-    if (list.length) {
-      body = `<div class="chips">${list.map((a) => `<span class="chip chip-danger">${esc(a.name)}</span>`).join('')}</div>`;
-    } else if (state.allergyNone) {
-      body = `<p>${esc(t('allergyNoneSet'))}</p>`;
-    } else {
-      body = `<p>${esc(t('allergyAsk'))}</p>`;
+    const tile = `<span class="tile tile-danger">${icon('allergy')}</span>`;
+    if (!list.length && !state.allergyNone) {
+      return `<section class="allergy-card asking" aria-labelledby="al-h">
+        <div class="allergy-row">${tile}<h2 id="al-h">${esc(t('allergyAskShort'))}</h2></div>
+        <div class="btn-row"><a class="btn btn-primary btn-sm" href="#/allergies">${icon('plus')}<span>${esc(t('allergyAdd'))}</span></a>
+          <button type="button" class="btn btn-secondary btn-sm" data-action="al-none">${esc(t('allergyNoneShort'))}</button></div>
+      </section>`;
     }
-    const actions = asking
-      ? `<div class="btn-row"><a class="btn btn-primary btn-sm" href="#/allergies">${icon('plus')}<span>${esc(t('allergyAdd'))}</span></a>
-          <button type="button" class="btn btn-secondary btn-sm" data-action="al-none">${esc(t('allergyNoneBtn'))}</button></div>`
-      : `<a class="btn btn-secondary btn-sm" href="#/allergies">${esc(t('allergyEdit'))}</a>`;
-    return `<section class="allergy-card${asking ? ' asking' : ''}" aria-labelledby="al-h">
-      <div class="allergy-head"><span class="tile tile-danger">${icon('allergy')}</span><h2 id="al-h">${esc(t('allergyTitle'))}</h2></div>
-      ${body}
-      <div class="allergy-actions">${actions}</div>
+    const body = list.length
+      ? `<div class="chips">${list.map((a) => `<span class="chip chip-danger">${esc(a.name)}</span>`).join('')}</div>`
+      : `<span class="muted">${esc(t('allergyNoneSet'))}</span>`;
+    return `<section class="allergy-card" aria-labelledby="al-h">
+      <div class="allergy-row">${tile}
+        <div class="allergy-main"><h2 id="al-h">${esc(t('allergyMine'))}</h2>${body}</div>
+        <a class="btn btn-secondary btn-sm" href="#/allergies" aria-label="${esc(t('allergyEdit'))}">${esc(t('editShort'))}</a>
+      </div>
     </section>`;
   }
 

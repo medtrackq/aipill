@@ -944,6 +944,12 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   // Voice search & read-aloud
   // ------------------------------------------------------------------
   let recog = null;
+  // voice problems: a toast, plus a lasting line under the home mic button
+  function voiceProblem(msg) {
+    const hint = $('#voice-hint');
+    if (hint) hint.textContent = msg;
+    if (msg) toast(msg);
+  }
   // called on every navigation: a late result must not land on another screen
   function stopVoice() {
     if (!recog) return;
@@ -955,7 +961,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   }
   function startVoice(btn, onText) {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { toast(t('voiceUnsupported')); return; }
+    if (!SR) { voiceProblem(t('voiceUnsupported')); return; }
     if (recog) { recog.stop(); return; }
     const r = new SR();
     recog = r;
@@ -964,10 +970,17 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     r.maxAlternatives = 4;
     btn.setAttribute('aria-pressed', 'true');
     const label = btn.querySelector('.btn-label');
-    if (label) label.textContent = t('voiceStop');
-    else btn.setAttribute('aria-label', t('voiceStop'));
+    const sub = btn.querySelector('.btn-sub');
+    const setLabels = (on) => {
+      const key = on ? (btn.dataset.labelOn || 'voiceStop') : (btn.dataset.labelOff || 'voiceBtn');
+      if (label) label.textContent = t(key); else btn.setAttribute('aria-label', t(key));
+      const subKey = on ? btn.dataset.subOn : btn.dataset.subOff;
+      if (sub && subKey) sub.textContent = t(subKey);
+    };
+    setLabels(true);
+    voiceProblem('');
     announce(t('listening'));
-    toast(t('listening'));
+    if (!btn.dataset.labelOn) toast(t('listening')); // the big button already says it
     r.onresult = (e) => {
       if (recog !== r || !btn.isConnected) return;
       const alts = Array.from(e.results[0] || []).map((a) => a.transcript.trim()).filter(Boolean);
@@ -976,15 +989,14 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
       if (best) { announce(t('heard', { q: best })); onText(best); }
     };
     r.onerror = (e) => {
-      toast(e.error === 'not-allowed' || e.error === 'service-not-allowed' ? t('voiceDenied') : t('voiceError'));
+      voiceProblem(e.error === 'not-allowed' || e.error === 'service-not-allowed' ? t('voiceDenied') : t('voiceError'));
     };
     r.onend = () => {
       if (recog === r) recog = null;
       btn.setAttribute('aria-pressed', 'false');
-      if (label) label.textContent = t('voiceBtn');
-      else btn.setAttribute('aria-label', t('voiceBtn'));
+      setLabels(false);
     };
-    try { r.start(); } catch (e) { recog = null; btn.setAttribute('aria-pressed', 'false'); toast(t('voiceError')); }
+    try { r.start(); } catch (e) { recog = null; btn.setAttribute('aria-pressed', 'false'); setLabels(false); voiceProblem(t('voiceError')); }
   }
 
   let speaking = false;
@@ -1116,13 +1128,23 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     return `<div class="pill-notice" role="note"><span>${esc(t('demoShortNotice'))}</span>
       <button type="button" class="btn btn-secondary btn-sm" data-action="settings">${esc(t('demoSetup'))}</button></div>`;
   }
-  function searchBar(q, autofocus) {
+  function searchBar(q, autofocus, withMic = true) {
     return `<form class="searchbar" id="search-form" role="search" autocomplete="off">
       ${icon('search')}
       <label class="sr-only" for="search-input">${esc(t('searchLabel'))}</label>
-      <input id="search-input" type="search" enterkeyhint="search" placeholder="${esc(t('homeSearchPh'))}" value="${esc(q)}"${autofocus ? ' data-autofocus' : ''}>
-      <button type="button" class="round-btn btn-mic" data-action="voice" data-target="search-input" aria-pressed="false" aria-label="${esc(t('voiceBtn'))}">${icon('mic')}</button>
+      <input id="search-input" type="search" enterkeyhint="search" placeholder="${esc(withMic ? t('homeSearchPh') : t('homeTypePh'))}" value="${esc(q)}"${autofocus ? ' data-autofocus' : ''}>
+      ${withMic ? `<button type="button" class="round-btn btn-mic" data-action="voice" data-target="search-input" aria-pressed="false" aria-label="${esc(t('voiceBtn'))}">${icon('mic')}</button>` : ''}
     </form>`;
+  }
+  // Large "tap and speak" button for the home screen. The labels swap while
+  // listening (data-label-on/off, data-sub-on/off are i18n keys).
+  function bigMicButton() {
+    return `<button type="button" class="voice-btn" data-action="voice" data-target="search-input" aria-pressed="false"
+        data-label-on="listening" data-label-off="voiceBigTitle" data-sub-on="voiceTapStop" data-sub-off="voiceBigSub">
+      <span class="mic-dot" aria-hidden="true">${icon('mic')}</span>
+      <span><span class="vb-title btn-label">${esc(t('voiceBigTitle'))}</span><span class="vb-sub btn-sub">${esc(t('voiceBigSub'))}</span></span>
+    </button>
+    <p id="voice-hint" class="help voice-hint" aria-live="polite"></p>`;
   }
   // On the search screen results update while typing; elsewhere Enter opens
   // the drug (exact name) or the search screen.
@@ -1154,7 +1176,8 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
         <h1 tabindex="-1">${esc(t('homeTitle'))}</h1>
         <p>${esc(t('appTagline'))}</p>
       </div>
-      ${searchBar('', false)}
+      ${searchBar('', false, false)}
+      ${bigMicButton()}
       ${allergyCard()}
       <section class="camera-card" aria-labelledby="cam-h">
         <span class="cam-ico" aria-hidden="true">${icon('camera')}</span>

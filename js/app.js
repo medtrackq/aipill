@@ -6,27 +6,28 @@
 (function () {
   'use strict';
 
-  const { DRUGS, INTERACTIONS } = window.DRUG_DB;
+  const { DRUGS, INTERACTIONS, ALLERGY_GROUPS } = window.DRUG_DB;
+  const SCRIPT_URL = (document.currentScript && document.currentScript.src) || location.href;
   const I18N = window.I18N;
 
   // ------------------------------------------------------------------
   // Configuration
   // ------------------------------------------------------------------
   const CONFIG = {
-    defaultModel: 'gemini-3.8-flash',
-    apiBase: 'https://generativelanguage.googleapis.com/v1beta/models/',
+    // Claude model and effort. Opus 5.5 reads labels most accurately; "low"
+    // effort keeps answers fast (raise to "medium" for harder photos).
+    defaultModel: 'claude-opus-5-5',
+    effort: 'low',
+    // vendored official SDK, resolved relative to this script
+    sdkUrl: new URL('../vendor/anthropic-sdk-1.3.0.min.mjs', SCRIPT_URL).href,
     fdaUrl: 'https://www.fda.moph.go.th/',
-    fdaHost: 'fda.moph.go.th',
     emergencyTel: '1669',
     poisonTel: '1367',
     // Link to a real telepharmacy / LINE Official Account chat, if you have one.
     pharmacistChatUrl: '',
-    zxingUrl: 'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js',
-    // Subresource Integrity hash of the exact ZXing file above
-    zxingIntegrity: 'sha384-BzBxP10ZE72aitqj5UMmUsbKFliP/DZqA8Wq+BNNhlIJDGoEd1tpkMYXOg9+n6sB',
     maxImageSide: 1600,
     lowConfidence: 60,
-    aiTimeoutMs: 45000
+    aiTimeoutMs: 60000
   };
   // Text sizes as a multiple of the browser's own default font size, so a user
   // who already enlarged text in their browser keeps that enlargement
@@ -60,20 +61,23 @@
     lang: store.get('lang', detectLang()),
     fontIdx: Math.min(FONT_SCALES.length - 1, Math.max(0, Math.round(Number(store.get('fontIdx', 0))) || 0)),
     contrast: store.get('contrast', prefersHighContrast() ? 'high' : 'normal'),
-    apiKey: store.get('apiKey', ''),
-    model: store.get('model', CONFIG.defaultModel),
+    apiKey: store.get('anthropicKey', ''),
+    model: store.get('claudeModel', CONFIG.defaultModel),
     recent: arrayOf(store.get('recent', []), (x) => typeof x === 'string'),
     ixList: arrayOf(store.get('ixList', []), (x) => x && typeof x.name === 'string'),
+    allergies: arrayOf(store.get('allergies', []), (x) => x && typeof x.name === 'string'),
+    allergyNone: store.get('allergyNone', false) === true,
     ixResult: null,
     ixAi: null,
     analysis: null,       // last AI analysis {ai, demo, photo, mode, dbId}
     fallback: null,       // {reason, mode}
     comparePhoto: {},     // drugId -> user photo (session only)
-    scanResult: null,
-    identify: { shape: null, color: null, imprint: '' },
     pendingPhoto: null
   };
   if (!I18N[state.lang]) state.lang = 'th';
+  // keys saved by the earlier Gemini version cannot be used with Claude
+  store.del('apiKey');
+  store.del('model');
 
   // ------------------------------------------------------------------
   // Helpers
@@ -121,12 +125,24 @@
     el.textContent = '';
     setTimeout(() => { el.textContent = msg; }, 50);
   }
+  let overlayTimer = null;
   function showOverlay(title, sub) {
     $('#overlay-title').textContent = title;
     $('#overlay-sub').textContent = sub || '';
+    $('#overlay-elapsed').textContent = '';
     $('#overlay').hidden = false;
+    const started = Date.now();
+    clearInterval(overlayTimer);
+    // elapsed time is visual only (aria-hidden) so screen readers are not
+    // interrupted every second by the live region
+    overlayTimer = setInterval(() => {
+      $('#overlay-elapsed').textContent = t('elapsed', { n: Math.round((Date.now() - started) / 1000) });
+    }, 1000);
   }
-  function hideOverlay() { $('#overlay').hidden = true; }
+  function hideOverlay() {
+    clearInterval(overlayTimer);
+    $('#overlay').hidden = true;
+  }
 
   // ------------------------------------------------------------------
   // Icons (inline SVG, decorative)
@@ -154,21 +170,24 @@
     calendar: '<rect width="18" height="18" x="3" y="4" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/>',
     clipboard: '<rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>',
     stop: '<rect width="14" height="14" x="5" y="5" rx="2"/>',
-    external: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>'
+    external: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+    home: '<path d="m3 10.5 9-7 9 7"/><path d="M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5"/>',
+    gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/>',
+    lifebuoy: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><path d="m4.93 4.93 4.24 4.24"/><path d="m14.83 9.17 4.24-4.24"/><path d="m14.83 14.83 4.24 4.24"/><path d="m9.17 14.83-4.24 4.24"/>',
+    chevron: '<path d="m9 18 6-6-6-6"/>',
+    allergy: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v4"/><path d="M12 16h.01"/>'
   };
   function icon(name, size = 24) {
     return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${ICON_PATHS[name] || ''}</svg>`;
   }
 
   // ------------------------------------------------------------------
-  // Pill illustration (SVG) — used for the identifier and "reference" image
+  // Pill illustration (SVG) — the "reference" image on drug pages
   // ------------------------------------------------------------------
   const COLOR_HEX = {
     white: '#f7f7f2', yellow: '#f4cf3a', orange: '#f29a4a', pink: '#f3a3bf', red: '#d43d3d',
     purple: '#9466c9', blue: '#4f8fd6', green: '#5fb36a', brown: '#b08560', black: '#2b2b2b'
   };
-  const SHAPES = ['round', 'oval', 'oblong', 'capsule', 'other'];
-  const COLORS = Object.keys(COLOR_HEX);
 
   function pillSvg(look, label, fillOverride) {
     const c1 = fillOverride || COLOR_HEX[look.colors && look.colors[0]] || '#e3e6e8';
@@ -310,62 +329,11 @@
   }
 
   // The one drug whose name or alias equals the query exactly, else null.
-  // This is the only kind of match allowed to open a drug or link a scan / AI
+  // This is the only kind of match allowed to open a drug or link an AI
   // result to the database: partial and category matches are shown as choices.
   function exactDrug(matches) {
     const exact = matches.filter((m) => m.score === SCORE.EXACT);
     return exact.length === 1 ? exact[0].drug : null;
-  }
-
-  // find a drug name written as a whole word inside free text (QR content)
-  function findDrugInText(text) {
-    const words = normWords(text);
-    let best = null, bestLen = 0;
-    for (const { drug, terms } of INDEX) {
-      for (const term of terms) {
-        if (term.kind === 'category') continue;
-        if (term.n.length > bestLen && hasWord(words, term)) { best = drug; bestLen = term.n.length; }
-      }
-    }
-    return best;
-  }
-
-  // ------------------------------------------------------------------
-  // Pill identifier (shape / colour / imprint)
-  // ------------------------------------------------------------------
-  const NEAR_SHAPES = { oval: ['oblong'], oblong: ['oval', 'capsule'], capsule: ['oblong'], round: ['other'], other: ['round'] };
-
-  function identifyMatches({ shape, color, imprint }) {
-    const imp = norm(imprint || '');
-    const impDigits = (imprint || '').replace(/\D/g, '');
-    if (!shape && !color && !imp) return [];
-    const out = [];
-    for (const { drug, terms } of INDEX) {
-      let best = null;
-      for (const look of drug.looks || []) {
-        let score = 0, max = 0;
-        if (shape) {
-          max += 3;
-          if (look.shape === shape) score += 3;
-          else if ((NEAR_SHAPES[shape] || []).includes(look.shape)) score += 1;
-        }
-        if (color) {
-          max += 3;
-          if ((look.colors || []).includes(color)) score += 3;
-        }
-        if (imp) {
-          max += 3;
-          const imprints = (look.imprint || []).map(norm);
-          if (imprints.some((x) => x === imp)) score += 3;
-          else if (imp.length >= 3 && terms.some(({ n }) => n.includes(imp) || (n.length >= 4 && imp.includes(n)))) score += 3;
-          else if (impDigits && String(drug.strength).replace(/\D/g, ' ').split(' ').includes(impDigits)) score += 2;
-        }
-        const ratio = max ? score / max : 0;
-        if (!best || ratio > best.ratio) best = { ratio, look };
-      }
-      if (best && best.ratio >= 0.66) out.push({ drug, look: best.look, ratio: best.ratio });
-    }
-    return out.sort((a, b) => b.ratio - a.ratio).slice(0, 8);
   }
 
   // ------------------------------------------------------------------
@@ -391,6 +359,115 @@
     results.sort((x, y) => order[x.level] - order[y.level]);
     // ids that are no longer in the database are reported as unchecked too
     return { results, unknown: list.filter((x) => !x.id || !drugById(x.id)) };
+  }
+
+  // ------------------------------------------------------------------
+  // Drug allergies
+  // Each recorded allergy is resolved to a database drug and/or drug
+  // classes (ALLERGY_GROUPS). A medicine conflicts when it is the same
+  // active ingredient (exact), shares a class (group) or belongs to a class
+  // with known cross-allergy (cross, shown in orange).
+  // ------------------------------------------------------------------
+  const termOf = (x) => ({ term: x, n: norm(x), words: normWords(x) });
+  const GROUP_INDEX = ALLERGY_GROUPS.map((g) => ({
+    group: g,
+    terms: [...g.terms, g.name.th, g.name.en, g.name.zh].map(termOf).filter((x) => x.n)
+  }));
+  const groupById = (id) => ALLERGY_GROUPS.find((g) => g.id === id) || null;
+
+  // what a typed name refers to: a database drug and/or drug classes
+  function profileOfName(name) {
+    const stripped = stripStrength(name);
+    const n = norm(stripped);
+    const words = normWords(stripped);
+    const drug = n ? exactDrug(searchDrugs(name).matches) : null;
+    const groups = new Set(drug ? drug.allergyGroups || [] : []);
+    if (n) {
+      for (const { group, terms } of GROUP_INDEX) {
+        if (terms.some((x) => x.n === n || hasWord(words, x))) groups.add(group.id);
+      }
+    }
+    return { drug, groups: [...groups], n };
+  }
+  function profileOfDrug(d) {
+    return { drug: d, groups: d.allergyGroups || [], n: norm(d.generic.en) };
+  }
+  function profileOfAllergy(a) {
+    const p = profileOfName(a.name);
+    if (!p.drug && a.drugId && drugById(a.drugId)) {
+      p.drug = drugById(a.drugId);
+      (p.drug.allergyGroups || []).forEach((g) => { if (!p.groups.includes(g)) p.groups.push(g); });
+    }
+    if (a.groupId && groupById(a.groupId) && !p.groups.includes(a.groupId)) p.groups.push(a.groupId);
+    return p;
+  }
+  // profile of a medicine the AI named (it may not be in the database)
+  function profileOfAiNames(names) {
+    const out = { drug: null, groups: [], n: '' };
+    names.filter(Boolean).forEach((x) => {
+      const p = profileOfName(x);
+      if (!out.drug && p.drug) out.drug = p.drug;
+      p.groups.forEach((g) => { if (!out.groups.includes(g)) out.groups.push(g); });
+    });
+    return out;
+  }
+
+  // compare one medicine with every recorded allergy, most serious first
+  function allergyConflicts(target, names = []) {
+    const keys = names.filter(Boolean).map((x) => norm(stripStrength(x))).filter(Boolean);
+    const out = [];
+    for (const a of state.allergies) {
+      const p = profileOfAllergy(a);
+      if (p.drug && target.drug && p.drug.ingredient === target.drug.ingredient) { out.push({ level: 'exact', allergy: a }); continue; }
+      const shared = p.groups.find((g) => target.groups.includes(g));
+      if (shared) { out.push({ level: 'group', allergy: a, group: groupById(shared) }); continue; }
+      // an allergy that matches nothing in the database is compared by name
+      if (!p.drug && !p.groups.length && p.n && keys.some((k) => k === p.n || (p.n.length >= 4 && k.includes(p.n)))) {
+        out.push({ level: 'exact', allergy: a }); continue;
+      }
+      const cross = p.groups.flatMap((g) => (groupById(g) || {}).cross || []).find((g) => target.groups.includes(g));
+      if (cross) out.push({ level: 'cross', allergy: a, group: groupById(cross) });
+    }
+    const rank = { exact: 0, group: 1, cross: 2 };
+    return out.sort((x, y) => rank[x.level] - rank[y.level]);
+  }
+  const drugConflicts = (d) => allergyConflicts(profileOfDrug(d), [d.generic.en]);
+
+  function conflictText(c) {
+    const a = c.allergy.name;
+    const g = c.group ? tr(c.group.name) : '';
+    if (c.level === 'exact') return { title: t('conflictExact'), sub: t('conflictExactSub', { a }) };
+    // when the allergy is the group itself, naming it twice adds nothing
+    if (c.level === 'group') return { title: t('conflictGroup', { g }), sub: c.group && norm(a) === norm(g) ? '' : t('conflictGroupSub', { a }) };
+    return { title: t('conflictCross', { a, g }), sub: '' };
+  }
+  // red (or orange for cross-allergy) banners shown above everything else
+  function allergyBanners(conflicts, aiWarning) {
+    const parts = conflicts.slice(0, 3).map((c) => {
+      const x = conflictText(c);
+      const kind = c.level === 'cross' ? 'warn' : 'danger';
+      return `<div class="banner banner-${kind} banner-allergy" role="alert"><span class="ico">${icon('allergy')}</span><div>${esc(x.title)}${x.sub ? `<small>${esc(x.sub)}</small>` : ''}</div></div>`;
+    });
+    if (!conflicts.length && aiWarning) {
+      parts.push(`<div class="banner banner-danger banner-allergy" role="alert"><span class="ico">${icon('allergy')}</span><div>${esc(t('conflictAi', { w: aiWarning }))}</div></div>`);
+    }
+    if (!parts.length) return '';
+    return parts.join('') + `<p style="margin:-.4rem 0 1rem"><a href="#/allergies">${esc(t('editAllergies'))}</a></p>`;
+  }
+
+  function saveAllergies() {
+    store.set('allergies', state.allergies);
+    store.set('allergyNone', state.allergyNone);
+  }
+  function addAllergy(item) {
+    const name = String(item.name || '').trim().slice(0, 120);
+    if (!name) return false;
+    if (state.allergies.some((x) => norm(x.name) === norm(name))) { toast(t('ixAlready')); return false; }
+    state.allergies.push({ name, drugId: item.drugId || null, groupId: item.groupId || null });
+    state.allergyNone = false;
+    saveAllergies();
+    toast(t('allergyAdded'));
+    return true;
   }
 
   // ------------------------------------------------------------------
@@ -428,7 +505,7 @@
       soon: ['warn', 'warn', t('expiringSoon')],
       ok: ['safe', 'check', t('notExpired')]
     }[st];
-    return `<div class="banner banner-${map[0]}" role="${st === 'expired' ? 'alert' : 'status'}"><span class="ico">${icon(map[1], 26)}</span><div>${esc(map[2])}<small>${esc(t('expiryLbl'))}: ${esc(formatExpiry(exp))}</small></div></div>`;
+    return `<div class="banner banner-${map[0]}" role="${st === 'expired' ? 'alert' : 'status'}"><span class="ico">${icon(map[1])}</span><div>${esc(map[2])}<small>${esc(t('expiryLbl'))}: ${esc(formatExpiry(exp))}</small></div></div>`;
   }
 
   // ------------------------------------------------------------------
@@ -461,7 +538,7 @@
   }
 
   // ------------------------------------------------------------------
-  // Gemini API
+  // Claude API (official Anthropic SDK, loaded only when AI is first used)
   // ------------------------------------------------------------------
   function aiLanguageName() { return t('aiLanguage'); }
 
@@ -469,66 +546,84 @@
     return DRUGS.map((d) => `- ${d.id}: ${d.generic.en} ${d.strength} (brands: ${(d.brands || []).filter(isLatin).join(', ') || '-'})`).join('\n');
   }
 
-  const AI_JSON_SHAPE = `{
-  "is_medicine": boolean,
-  "image_problem": "none" | "blurry" | "too_dark" | "glare" | "too_far" | "not_medicine",
-  "db_id": string or null,
-  "generic_name": string,
-  "brand_name": string,
-  "strength": string,
-  "appearance": string,
-  "label_text": string,
-  "indications": string,
-  "usage": string,
-  "cautions": string[],
-  "dangers": string[],
-  "side_effects": string[],
-  "pill_count": integer or null,
-  "expiry_date": "YYYY-MM-DD" or "YYYY-MM" or null,
-  "confidence": integer from 0 to 100
-}`;
+  // Structured output: the API guarantees the reply matches this schema.
+  const str = (description) => ({ type: 'string', description });
+  const strList = (description) => ({ type: 'array', items: { type: 'string' }, description });
+  const MEDICINE_FIELDS = {
+    is_medicine: { type: 'boolean', description: 'false when no medicine is shown or named' },
+    image_problem: { type: 'string', enum: ['none', 'blurry', 'too_dark', 'glare', 'too_far', 'not_medicine'], description: 'why the photo is unusable, or "none"' },
+    db_id: { anyOf: [{ type: 'string', enum: DRUGS.map((d) => d.id) }, { type: 'null' }], description: 'matching database entry, or null' },
+    generic_name: str('generic (active ingredient) name, "" if unknown'),
+    brand_name: str('brand / trade name, "" if unknown'),
+    strength: str('strength such as "500 mg", "" if unknown'),
+    appearance: str('physical appearance'),
+    label_text: str('all text read from the label, bag, foil or imprint'),
+    indications: str('what it is used for'),
+    usage: str('how to take it: label directions when visible, else the standard adult dose'),
+    cautions: strList('things to be careful about (food, milk, alcohol, drowsiness, timing)'),
+    dangers: strList('contraindications and serious risks'),
+    side_effects: strList('common side effects'),
+    pill_count: { anyOf: [{ type: 'integer' }, { type: 'null' }], description: 'pills or capsules clearly visible, null if not countable' },
+    expiry_date: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'expiry as YYYY-MM-DD or YYYY-MM (Gregorian), null if not visible' },
+    confidence: { type: 'integer', description: 'certainty of the identification, 0 to 100' },
+    allergy_warning: str('warning if this medicine may trigger one of the user\'s recorded drug allergies, "" if none')
+  };
+  const MEDICINE_SCHEMA = {
+    type: 'object',
+    properties: MEDICINE_FIELDS,
+    required: Object.keys(MEDICINE_FIELDS),
+    additionalProperties: false
+  };
+  const INTERACTION_SCHEMA = {
+    type: 'object',
+    properties: {
+      interactions: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            drugs: { type: 'array', items: { type: 'string' } },
+            level: { type: 'string', enum: ['major', 'moderate', 'minor'] },
+            explanation: { type: 'string' }
+          },
+          required: ['drugs', 'level', 'explanation'],
+          additionalProperties: false
+        }
+      },
+      note: { type: 'string' }
+    },
+    required: ['interactions', 'note'],
+    additionalProperties: false
+  };
 
-  function imagePrompt(mode) {
-    const focus = mode === 'package'
-      ? 'The user says this is a package, bottle, box or label: read every printed word, the dosing directions and the expiry date.'
-      : 'The user says this is a pill: look closely at the shape, colour, score line, imprint/markings and any packaging text.';
-    return `You are a careful clinical pharmacist assistant helping people in Thailand (many are elderly) identify a medicine from a photo.
-The photo may show loose pills, a blister pack, a bottle, a box, or a hospital/clinic medicine bag (often a clear zip-lock bag with a printed label). ${focus}
+  function medicineSystemPrompt() {
+    return `You are a careful clinical pharmacist assistant helping people in Thailand (many are elderly) check their medicines.
+The input may be a photo of loose pills, a blister pack, a bottle, a box, or a hospital/clinic medicine bag (often a clear zip-lock bag with a printed label), or a medicine name the user typed.
 
-Tasks:
-1. Read ALL visible text (label, bag, blister foil, imprint), including text seen through clear plastic. Put it in "label_text".
-2. Describe the physical appearance in "appearance".
-3. Count the pills or capsules that are clearly visible. Use null if counting is not possible.
-4. Find the expiry date (EXP / วันหมดอายุ / ใช้ก่อน). Thai labels may use Buddhist Era years (2570 = 2027): convert to Gregorian. Use null if not visible.
-5. Identify the medicine. Never claim high confidence from colour or shape alone – different medicines can look identical. Lower "confidence" whenever the identity is uncertain.
-6. If it is one of these database entries, put its id in "db_id", otherwise null:
+For a photo:
+1. Read ALL visible text (label, bag, blister foil, imprint), including text seen through clear plastic, into label_text.
+2. Describe the physical appearance.
+3. Count the pills or capsules that are clearly visible; null if counting is not possible.
+4. Find the expiry date (EXP / วันหมดอายุ / ใช้ก่อน). Thai labels may use Buddhist Era years (2570 = 2027): convert to Gregorian. null if not visible.
+5. If the photo is unusable, set image_problem. If there is no medicine, set is_medicine to false.
+
+Identify the medicine. Never claim high confidence from colour or shape alone: different medicines can look identical. Lower confidence whenever the identity is uncertain.
+Set db_id only when the medicine is exactly one of these database entries (same active ingredient), otherwise null:
 ${catalogForPrompt()}
-7. If the photo is unusable, set "image_problem" accordingly. If there is no medicine, set "is_medicine" to false.
 
-Write every human-readable value in ${aiLanguageName()}, in short simple sentences suitable for elderly readers.
-"usage" must follow the label or bag directions when they are visible; otherwise give the standard adult dose.
-"dangers" = contraindications and serious risks. "cautions" = things to be careful about (food, milk, alcohol, drowsiness, timing). Use "" or [] when unknown.
-Respond with ONLY a JSON object with exactly these keys:
-${AI_JSON_SHAPE}`;
+The user's recorded drug allergies: ${state.allergies.length ? JSON.stringify(state.allergies.map((a) => String(a.name).slice(0, 80))) : 'none'}.
+Set allergy_warning when the medicine is one of these, contains one of them, belongs to the same drug class, or belongs to a class with known cross-allergy; say which allergy and that the user must not take it before asking a doctor or pharmacist. Otherwise use "".
+
+Write every human-readable value in ${aiLanguageName()}, in short simple sentences suitable for elderly readers. Use "" or [] when something is unknown.`;
   }
-
-  function namePrompt(q) {
-    return `A user in Thailand searched a medicine database for ${JSON.stringify(String(q).slice(0, 200))} and it was not found.
-If this is a real medicine (or an obvious misspelling of one) available in Thailand, describe it. If you are not sure which medicine it is, set "is_medicine" to false and leave the other fields empty.
-If it is one of these database entries, put its id in "db_id", otherwise null:
-${catalogForPrompt()}
-Use "image_problem": "none", "label_text": "", "pill_count": null, "expiry_date": null.
-Write every human-readable value in ${aiLanguageName()}, in short simple sentences suitable for elderly readers.
-Respond with ONLY a JSON object with exactly these keys:
-${AI_JSON_SHAPE}`;
+  function photoInstruction() {
+    return 'This photo may show pills, a blister pack, a bottle, a box or a hospital medicine bag. Read every printed word, the dosing directions and the expiry date, and look closely at the shape, colour, score line and imprint of any pills.';
   }
-
-  function interactionPrompt(names) {
-    return `Check drug–drug interactions among these medicines taken by one patient in Thailand: ${JSON.stringify(names.map((n) => String(n).slice(0, 120)))}.
-Report only clinically meaningful interactions you are confident about, including duplicated active ingredients. Do not invent interactions.
-Write explanations in ${aiLanguageName()}, short and simple, and advise asking a doctor or pharmacist rather than stopping medicines.
-Respond with ONLY a JSON object:
-{"interactions": [{"drugs": [string, string], "level": "major" | "moderate" | "minor", "explanation": string}], "note": string}`;
+  function nameInstruction(q) {
+    return `I searched a medicine database for ${JSON.stringify(String(q).slice(0, 200))} and it was not found. If this is a real medicine (or an obvious misspelling of one) available in Thailand, describe it. If you are not sure which medicine it is, set is_medicine to false and leave the other fields empty. There is no photo: use image_problem "none", label_text "", pill_count null and expiry_date null.`;
+  }
+  function interactionSystemPrompt() {
+    return `You check drug–drug interactions for a patient in Thailand. Report only clinically meaningful interactions you are confident about, including duplicated active ingredients. Do not invent interactions. Write explanations in ${aiLanguageName()}, short and simple, and advise asking a doctor or pharmacist rather than stopping medicines.`;
   }
 
   function parseJsonLoose(text) {
@@ -536,7 +631,7 @@ Respond with ONLY a JSON object:
       const cleaned = text.replace(/```json|```/g, '').trim();
       const s = cleaned.indexOf('{'), en = cleaned.lastIndexOf('}');
       if (s >= 0 && en > s) return JSON.parse(cleaned.slice(s, en + 1));
-      throw new Error('Invalid AI response');
+      throw invalidAiError();
     }
   }
 
@@ -545,6 +640,8 @@ Respond with ONLY a JSON object:
   let aiJob = null;
   function beginAiJob() {
     cancelAiJob();
+    const stale = $('#ai-error'); // an earlier failure no longer applies
+    if (stale) stale.remove();
     const job = { controller: new AbortController(), timedOut: false };
     job.timer = setTimeout(() => { job.timedOut = true; job.controller.abort(); }, CONFIG.aiTimeoutMs);
     aiJob = job;
@@ -561,49 +658,61 @@ Respond with ONLY a JSON object:
     aiJob = null;
   }
 
-  async function geminiCall(parts, signal) {
-    const model = (state.model || CONFIG.defaultModel).trim();
-    const url = CONFIG.apiBase + encodeURIComponent(model) + ':generateContent';
-    const makeBody = (withThinking) => JSON.stringify({
-      contents: [{ role: 'user', parts }],
-      generationConfig: Object.assign(
-        { responseMimeType: 'application/json' },
-        withThinking ? { thinkingConfig: { thinkingLevel: 'low' } } : {}
-      )
-    });
-    const send = async (body) => {
-      try {
-        return await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': state.apiKey },
-          body,
-          signal
-        });
-      } catch (e) {
-        if (e && e.name === 'AbortError') throw e;
-        const err = new Error((e && e.message) || 'network');
-        err.network = true; // fetch itself failed: offline, DNS, CORS, proxy…
-        throw err;
-      }
-    };
-    let res = await send(makeBody(true));
-    if (res.status === 400) {
-      const txt = await res.clone().text();
-      if (/thinking/i.test(txt)) res = await send(makeBody(false)); // model without thinking levels
-    }
-    if (!res.ok) {
-      let msg = '';
-      try { const j = await res.json(); msg = (j.error && j.error.message) || ''; } catch (e) { /* ignore */ }
-      const err = new Error(msg || 'HTTP ' + res.status);
-      err.status = res.status; err.apiMessage = msg;
+  // The SDK is vendored (vendor/README.md) and imported on first use.
+  let sdkLoad = null;
+  async function loadSdk() {
+    if (!sdkLoad) sdkLoad = import(CONFIG.sdkUrl);
+    try {
+      return (await sdkLoad).default;
+    } catch (e) {
+      sdkLoad = null; // allow a retry, e.g. after the connection comes back
+      const err = new Error('could not load the AI library');
+      err.network = true;
       throw err;
     }
-    const data = await res.json();
-    if (data.promptFeedback && data.promptFeedback.blockReason) { const e = new Error('blocked'); e.blocked = true; throw e; }
-    const cand = data.candidates && data.candidates[0];
-    const text = ((cand && cand.content && cand.content.parts) || [])
-      .filter((p) => typeof p.text === 'string' && !p.thought).map((p) => p.text).join('');
-    if (!text) { const e = new Error('empty'); e.blocked = true; throw e; }
+  }
+
+  // Map SDK errors (typed classes, most specific first) onto what the UI says.
+  function classifySdkError(Anthropic, e) {
+    if (e instanceof Anthropic.APIUserAbortError) { const x = new Error('aborted'); x.name = 'AbortError'; return x; }
+    if (e instanceof Anthropic.APIConnectionTimeoutError) { const x = new Error('timeout'); x.name = 'AbortError'; x.timeout = true; return x; }
+    if (e instanceof Anthropic.AuthenticationError || e instanceof Anthropic.PermissionDeniedError) { e.keyProblem = true; return e; }
+    if (e instanceof Anthropic.RateLimitError || e instanceof Anthropic.InternalServerError) { e.busy = true; return e; } // 429, 5xx, 529 overloaded
+    if (e instanceof Anthropic.APIConnectionError) { e.network = true; return e; } // subclass of APIError: check first
+    return e;
+  }
+
+  // Server-side refusal fallback is supported on these models
+  const FALLBACK_MODELS = /^claude-(opus-5|fable-5|sonnet-5-5)/;
+
+  // One Claude request returning JSON that matches `schema`.
+  async function claudeJson({ system, content, schema }, signal) {
+    const Anthropic = await loadSdk();
+    const model = (state.model || CONFIG.defaultModel).trim();
+    const client = new Anthropic({
+      apiKey: state.apiKey,
+      dangerouslyAllowBrowser: true, // the user's own key, entered on this device (README: use a backend in production)
+      maxRetries: 1,
+      timeout: CONFIG.aiTimeoutMs
+    });
+    const params = {
+      model,
+      max_tokens: 16000,
+      system,
+      output_config: { effort: CONFIG.effort, format: { type: 'json_schema', schema } },
+      messages: [{ role: 'user', content }]
+    };
+    if (FALLBACK_MODELS.test(model)) Object.assign(params, { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' });
+    let response;
+    try {
+      response = await client.beta.messages.create(params, { signal });
+    } catch (e) {
+      throw classifySdkError(Anthropic, e);
+    }
+    if (response.stop_reason === 'refusal') { const e = new Error('refusal'); e.blocked = true; throw e; }
+    if (response.stop_reason === 'max_tokens') throw invalidAiError();
+    const text = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
+    if (!text) throw invalidAiError();
     return parseJsonLoose(text);
   }
 
@@ -650,15 +759,16 @@ Respond with ONLY a JSON object:
       side_effects: arr(raw.side_effects),
       pill_count: count,
       expiry_date: s(raw.expiry_date) || null,
-      confidence: conf
+      confidence: conf,
+      allergy_warning: s(raw.allergy_warning).slice(0, 400)
     };
   }
 
   function aiErrorMessage(err) {
     if (err && err.blocked) return t('errBlocked');
     if (err && err.network) return t('errNetwork');
-    if (err && (err.status === 401 || err.status === 403 || err.status === 429)) return t('errKey');
-    if (err && err.status === 400 && /api.?key/i.test(err.apiMessage || '')) return t('errKey');
+    if (err && err.keyProblem) return t('errKey');
+    if (err && err.busy) return t('errBusy');
     return t('errGeneric', { msg: (err && err.message) || '?' });
   }
 
@@ -668,7 +778,7 @@ Respond with ONLY a JSON object:
     return cleanAi({
       is_medicine: true, image_problem: 'none', db_id: 'paracetamol',
       generic_name: 'Paracetamol', brand_name: 'Sara', strength: '500 mg',
-      label_text: mode === 'package' ? t('demoLabel') : '',
+      label_text: t('demoLabel'),
       pill_count: 10, expiry_date: `${exp.getFullYear()}-${pad2(exp.getMonth() + 1)}`,
       confidence: 95
     });
@@ -700,14 +810,40 @@ Respond with ONLY a JSON object:
     return { fail: null, dbId };
   }
 
-  // shared error handling for AI jobs; returns nothing
-  function handleAiFailure(job, err) {
-    if (err && err.name === 'AbortError') {
-      if (job.timedOut) toast(t('errTimeout'));
-      return; // cancelled by the user or by navigation: stay quiet
-    }
-    console.error(err);
-    toast(aiErrorMessage(err));
+  // Shared error handling for AI jobs: the message stays on screen (a toast
+  // vanished before elderly users could read it) with a retry button.
+  function handleAiFailure(job, err, retry) {
+    const timedOut = job.timedOut || (err && err.timeout);
+    if (err && err.name === 'AbortError' && !timedOut) return; // cancelled by the user or by navigation
+    if (!timedOut) console.error(err);
+    showAiError(timedOut ? t('errTimeout') : aiErrorMessage(err), retry, { settings: !!(err && err.keyProblem) });
+  }
+
+  function showAiError(message, retry, { settings = false } = {}) {
+    const old = $('#ai-error');
+    if (old) old.remove();
+    const box = document.createElement('div');
+    box.id = 'ai-error';
+    box.className = 'banner banner-danger';
+    box.setAttribute('role', 'alert');
+    box.tabIndex = -1;
+    box.innerHTML = `<span class="ico">${icon('danger', 26)}</span><div style="flex:1">${esc(message)}
+      <div class="btn-row" style="margin-top:.75rem">
+        ${retry ? `<button type="button" class="btn btn-primary" data-ai-error="retry">${esc(t('retryAi'))}</button>` : ''}
+        ${settings ? `<button type="button" class="btn btn-secondary" data-ai-error="settings">${esc(t('demoSetup'))}</button>` : ''}
+        <button type="button" class="btn btn-ghost" data-ai-error="close">${esc(t('close'))}</button>
+      </div></div>`;
+    box.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-ai-error]');
+      if (!b) return;
+      box.remove();
+      if (b.dataset.aiError === 'retry') retry();
+      else if (b.dataset.aiError === 'settings') openSettings();
+    });
+    const head = $('.screen-head', app);
+    if (head) head.after(box); else app.prepend(box);
+    box.scrollIntoView({ block: 'center' });
+    box.focus({ preventScroll: true });
   }
 
   async function analyzePhoto(img, mode) {
@@ -721,10 +857,14 @@ Respond with ONLY a JSON object:
         ai = demoAnalysis(mode);
         demo = true;
       } else {
-        ai = cleanAi(await geminiCall([
-          { text: imagePrompt(mode) },
-          { inlineData: { mimeType: img.mime, data: img.base64 } }
-        ], job.controller.signal));
+        ai = cleanAi(await claudeJson({
+          system: medicineSystemPrompt(),
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: img.mime, data: img.base64 } },
+            { type: 'text', text: photoInstruction() }
+          ],
+          schema: MEDICINE_SCHEMA
+        }, job.controller.signal));
       }
       const outcome = resolveAnalysis(ai);
       state.analysis = { ai, demo, photo: img.dataUrl, mode, dbId: outcome.dbId, guess: !!outcome.guess };
@@ -737,7 +877,7 @@ Respond with ONLY a JSON object:
         go('#/result');
       }
     } catch (err) {
-      handleAiFailure(job, err);
+      handleAiFailure(job, err, () => analyzePhoto(img, mode));
     } finally {
       if (aiJob === job) hideOverlay();
       endAiJob(job);
@@ -749,7 +889,11 @@ Respond with ONLY a JSON object:
     const job = beginAiJob();
     showOverlay(t('searchingAi'), t('analyzingSub'));
     try {
-      const ai = cleanAi(await geminiCall([{ text: namePrompt(q) }], job.controller.signal));
+      const ai = cleanAi(await claudeJson({
+        system: medicineSystemPrompt(),
+        content: [{ type: 'text', text: nameInstruction(q) }],
+        schema: MEDICINE_SCHEMA
+      }, job.controller.signal));
       const outcome = resolveAnalysis(ai);
       state.analysis = { ai, demo: false, photo: null, mode: 'name', dbId: outcome.dbId, guess: !!outcome.guess };
       endAiJob(job);
@@ -763,7 +907,7 @@ Respond with ONLY a JSON object:
         go('#/result');
       }
     } catch (err) {
-      handleAiFailure(job, err);
+      handleAiFailure(job, err, () => askAiByName(q));
     } finally {
       if (aiJob === job) hideOverlay();
       endAiJob(job);
@@ -773,7 +917,7 @@ Respond with ONLY a JSON object:
   // ------------------------------------------------------------------
   // Photos
   // ------------------------------------------------------------------
-  function requestPhoto(mode, opts = {}) {
+  function requestPhoto(mode = 'photo', opts = {}) {
     state.pendingPhoto = { mode, compareId: opts.compareId || null };
     const input = opts.gallery ? $('#file-gallery') : $('#file-camera');
     input.value = '';
@@ -782,7 +926,7 @@ Respond with ONLY a JSON object:
   async function handlePhotoFile(file) {
     if (!file) return;
     if (!/^image\//.test(file.type || '')) { toast(t('errNotImage')); return; }
-    const p = state.pendingPhoto || { mode: 'pill' };
+    const p = state.pendingPhoto || { mode: 'photo' };
     let img;
     try { img = await prepareImage(file); } catch (e) { toast(t('errNotImage')); return; }
     if (p.mode === 'compare') {
@@ -793,161 +937,7 @@ Respond with ONLY a JSON object:
       if (fig) fig.scrollIntoView({ block: 'center' });
       return;
     }
-    if (p.mode === 'barcode') {
-      await decodeImageBarcode(img.canvas);
-      return;
-    }
     await analyzePhoto(img, p.mode);
-  }
-
-  // ------------------------------------------------------------------
-  // Barcode / QR scanning
-  // ------------------------------------------------------------------
-  // session: bumped by stopCamera() so a start that is still awaiting the
-  // decoder or camera permission knows it has been cancelled
-  const scanner = { stream: null, timer: null, decode: null, canvas: null, busy: false, session: 0, starting: false };
-
-  // One shared promise per script, so concurrent callers wait for the same
-  // load; a failed load is forgotten so the next attempt can retry.
-  const scriptLoads = {};
-  function loadScript(src, integrity) {
-    if (!scriptLoads[src]) {
-      scriptLoads[src] = new Promise((resolve, reject) => {
-        const el = document.createElement('script');
-        el.src = src; el.async = true; el.crossOrigin = 'anonymous';
-        if (integrity) el.integrity = integrity;
-        el.onload = () => resolve();
-        el.onerror = () => { el.remove(); delete scriptLoads[src]; reject(new Error('load ' + src)); };
-        document.head.appendChild(el);
-      });
-    }
-    return scriptLoads[src];
-  }
-
-  async function getDecoder() {
-    if (scanner.decode) return scanner.decode;
-    if ('BarcodeDetector' in window) {
-      try {
-        const formats = await window.BarcodeDetector.getSupportedFormats();
-        if (formats && formats.length) {
-          const det = new window.BarcodeDetector({ formats });
-          scanner.decode = async (canvas) => {
-            const r = await det.detect(canvas);
-            return r && r[0] ? r[0].rawValue : null;
-          };
-          return scanner.decode;
-        }
-      } catch (e) { /* fall through to ZXing */ }
-    }
-    await loadScript(CONFIG.zxingUrl, CONFIG.zxingIntegrity);
-    const Z = window.ZXing;
-    if (!Z || !Z.MultiFormatReader) throw new Error('scanner');
-    const hints = new Map();
-    hints.set(Z.DecodeHintType.TRY_HARDER, true);
-    const reader = new Z.MultiFormatReader();
-    reader.setHints(hints);
-    scanner.decode = async (canvas) => {
-      try {
-        const src = new Z.HTMLCanvasElementLuminanceSource(canvas);
-        const bmp = new Z.BinaryBitmap(new Z.HybridBinarizer(src));
-        return reader.decode(bmp, hints).getText();
-      } catch (e) { return null; }
-    };
-    return scanner.decode;
-  }
-
-  async function startCamera() {
-    if (scanner.starting || scanner.stream) return; // ignore double taps
-    const video = $('#scan-video');
-    const wrap = $('#scanner-wrap');
-    const btn = $('#btn-start-camera');
-    if (!video || !wrap || !btn) return;
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast(t('cameraDenied')); return; }
-    const session = ++scanner.session;
-    const cancelled = () => session !== scanner.session || !video.isConnected;
-    scanner.starting = true;
-    btn.disabled = true;
-    try {
-      let decode, stream;
-      try {
-        announce(t('scannerLoading'));
-        decode = await getDecoder();
-      } catch (e) { if (!cancelled()) toast(t('scannerUnavailable')); return; }
-      if (cancelled()) return;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
-      } catch (e) { if (!cancelled()) toast(t('cameraDenied')); return; }
-      if (cancelled()) { stream.getTracks().forEach((tr) => tr.stop()); return; } // user left meanwhile
-      scanner.stream = stream;
-      video.srcObject = stream;
-      video.setAttribute('playsinline', '');
-      // not awaited: play() can stay pending until the first frame arrives,
-      // and the controls (incl. "close camera") must be visible meanwhile
-      video.play().catch(() => {});
-      wrap.hidden = false;
-      btn.hidden = true;
-      announce(t('scanHint'));
-      scanner.canvas = scanner.canvas || document.createElement('canvas');
-      clearInterval(scanner.timer);
-      scanner.timer = setInterval(() => scanFrame(video, decode, session), 350);
-    } finally {
-      if (session === scanner.session) scanner.starting = false;
-      btn.disabled = false;
-    }
-  }
-
-  async function scanFrame(video, decode, session) {
-    if (session !== scanner.session || scanner.busy || !video.videoWidth) return;
-    scanner.busy = true;
-    try {
-      const c = scanner.canvas;
-      const scale = Math.min(1, 960 / video.videoWidth);
-      c.width = Math.round(video.videoWidth * scale);
-      c.height = Math.round(video.videoHeight * scale);
-      c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
-      const code = await decode(c);
-      if (code && session === scanner.session) {
-        stopCamera();
-        if (navigator.vibrate) navigator.vibrate(120);
-        handleCode(code);
-      }
-    } finally { scanner.busy = false; }
-  }
-
-  function stopCamera() {
-    scanner.session++;
-    scanner.starting = false;
-    clearInterval(scanner.timer);
-    scanner.timer = null;
-    if (scanner.stream) scanner.stream.getTracks().forEach((tr) => tr.stop());
-    scanner.stream = null;
-    const wrap = $('#scanner-wrap');
-    if (wrap) wrap.hidden = true;
-    const btn = $('#btn-start-camera');
-    if (btn) btn.hidden = false;
-  }
-
-  async function decodeImageBarcode(canvas) {
-    let decode;
-    try { decode = await getDecoder(); } catch (e) { toast(t('scannerUnavailable')); return; }
-    const code = await decode(canvas);
-    if (code) handleCode(code);
-    else {
-      state.scanResult = { code: null };
-      renderScanResult();
-    }
-  }
-
-  function handleCode(raw) {
-    const code = String(raw).trim().slice(0, 2000);
-    const byBarcode = DRUGS.find((d) => (d.barcodes || []).includes(code));
-    if (byBarcode) { go('#/drug/' + byBarcode.id); return; }
-    const drug = findDrugInText(code);
-    const regMatch = code.match(/\b\d{1,2}\s?[A-Z]\s?\d{1,5}\/\d{2,4}(?:\s?\([A-Z]{1,3}\))?/i);
-    let url = null;
-    try { const u = new URL(code); if (/^https?:$/.test(u.protocol)) url = u; } catch (e) { /* not a URL */ }
-    state.scanResult = { code, drugId: drug ? drug.id : null, reg: regMatch ? regMatch[0] : null, url: url ? url.href : null, host: url ? url.hostname : null };
-    renderScanResult();
   }
 
   // ------------------------------------------------------------------
@@ -975,6 +965,7 @@ Respond with ONLY a JSON object:
     btn.setAttribute('aria-pressed', 'true');
     const label = btn.querySelector('.btn-label');
     if (label) label.textContent = t('voiceStop');
+    else btn.setAttribute('aria-label', t('voiceStop'));
     announce(t('listening'));
     toast(t('listening'));
     r.onresult = (e) => {
@@ -991,6 +982,7 @@ Respond with ONLY a JSON object:
       if (recog === r) recog = null;
       btn.setAttribute('aria-pressed', 'false');
       if (label) label.textContent = t('voiceBtn');
+      else btn.setAttribute('aria-label', t('voiceBtn'));
     };
     try { r.start(); } catch (e) { recog = null; btn.setAttribute('aria-pressed', 'false'); toast(t('voiceError')); }
   }
@@ -1055,13 +1047,12 @@ Respond with ONLY a JSON object:
 
   function screenHead(title) {
     return `<div class="screen-head">
-      <button type="button" class="btn btn-back" data-action="back">${icon('arrowLeft')}<span>${esc(t('back'))}</span></button>
+      <button type="button" class="btn-back" data-action="back">${icon('arrowLeft')}<span>${esc(t('back'))}</span></button>
       <h1 tabindex="-1">${esc(title)}</h1>
     </div>`;
   }
 
   function render(moveFocus) {
-    stopCamera();
     stopSpeaking();
     stopVoice();
     const r = parseRoute();
@@ -1069,13 +1060,18 @@ Respond with ONLY a JSON object:
     try {
       switch (r.name) {
         case 'search': title = renderSearch(r.params.get('q') || ''); break;
-        case 'identify': title = renderIdentify(); break;
-        case 'scan': title = renderScan(); break;
         case 'interactions': title = renderInteractions(); break;
+        case 'allergies': title = renderAllergies(); break;
         case 'drug': title = renderDrugRoute(r.arg); break;
         case 'result': title = renderResult(); break;
         case 'notfound': title = renderNotFound(); break;
-        default: title = renderHome();
+        default:
+          // unknown or retired routes (#/identify, #/scan) show the home screen
+          if (r.name !== 'home') {
+            try { history.replaceState(null, '', '#/'); } catch (e) { /* ignore */ }
+            if (navStack.length) navStack[navStack.length - 1] = '#/';
+          }
+          title = renderHome();
       }
     } catch (err) {
       // never leave the user on a blank screen
@@ -1083,6 +1079,7 @@ Respond with ONLY a JSON object:
       state.fallback = { reason: 'not_found', mode: 'name' };
       title = renderNotFound();
     }
+    updateTabbar(parseRoute().name);
     document.title = title === t('appName') ? `${title} · AI Pill` : `${title} · ${t('appName')}`;
     if (moveFocus) {
       window.scrollTo(0, 0);
@@ -1091,88 +1088,126 @@ Respond with ONLY a JSON object:
     }
   }
 
+  function updateTabbar(name) {
+    $$('.tabbar a[data-tab]').forEach((el) => {
+      if (el.dataset.tab === name) el.setAttribute('aria-current', 'page');
+      else el.removeAttribute('aria-current');
+    });
+  }
+
   // ------------------------------------------------------------------
   // Screens
   // ------------------------------------------------------------------
-  function emergencyBanner() {
-    return `<section class="emergency" aria-labelledby="em-title">
-      <div class="emergency-head">${icon('danger', 30)}<div>
-        <strong id="em-title">${esc(t('emergencyTitle'))}</strong>
+  function sosCard() {
+    return `<section class="sos" aria-labelledby="sos-h">
+      <span class="tile tile-danger">${icon('danger')}</span>
+      <div style="flex:1;min-width:0">
+        <strong id="sos-h">${esc(t('emergencyTitle'))}</strong>
         <p>${esc(t('emergencyText'))}</p>
-      </div></div>
-      <div class="btn-row">
-        <a class="btn btn-call" href="tel:${CONFIG.emergencyTel}">${icon('phone')}<span>${esc(t('call1669'))}</span></a>
-        <a class="btn btn-call-outline" href="tel:${CONFIG.poisonTel}">${icon('phone')}<span>${esc(t('call1367'))}</span></a>
+        <div class="btn-row">
+          <a class="btn btn-call btn-sm" href="tel:${CONFIG.emergencyTel}">${icon('phone')}<span>${esc(t('call1669'))}</span></a>
+          <a class="btn btn-call-outline btn-sm" href="tel:${CONFIG.poisonTel}">${icon('phone')}<span>${esc(t('call1367'))}</span></a>
+        </div>
       </div>
     </section>`;
   }
   function demoNotice() {
     if (state.apiKey) return '';
-    return `<div class="notice" role="note">${icon('info')}<div><p style="margin:0 0 .4rem">${esc(t('demoNotice'))}</p>
-      <button type="button" class="btn btn-secondary" data-action="settings">${esc(t('demoSetup'))}</button></div></div>`;
+    return `<div class="pill-notice" role="note"><span>${esc(t('demoShortNotice'))}</span>
+      <button type="button" class="btn btn-secondary btn-sm" data-action="settings">${esc(t('demoSetup'))}</button></div>`;
+  }
+  function searchBar(q, autofocus) {
+    return `<form class="searchbar" id="search-form" role="search" autocomplete="off">
+      ${icon('search')}
+      <label class="sr-only" for="search-input">${esc(t('searchLabel'))}</label>
+      <input id="search-input" type="search" enterkeyhint="search" placeholder="${esc(t('homeSearchPh'))}" value="${esc(q)}"${autofocus ? ' data-autofocus' : ''}>
+      <button type="button" class="round-btn btn-mic" data-action="voice" data-target="search-input" aria-pressed="false" aria-label="${esc(t('voiceBtn'))}">${icon('mic')}</button>
+    </form>`;
+  }
+  // On the search screen results update while typing; elsewhere Enter opens
+  // the drug (exact name) or the search screen.
+  function wireSearchForm(live) {
+    const form = $('#search-form'), input = $('#search-input');
+    if (!form || !input) return;
+    if (live) {
+      let timer = null;
+      input.addEventListener('input', () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => updateSearchResults(input.value, false), 150);
+      });
+    }
+    form.addEventListener('submit', (e) => { e.preventDefault(); submitSearch(input.value); });
+  }
+  function submitSearch(q) {
+    const query = String(q || '').trim();
+    if ($('#search-results')) { updateSearchResults(query, true); return; }
+    const exact = exactDrug(searchDrugs(query).matches);
+    if (exact) go('#/drug/' + exact.id);
+    else go('#/search' + (query ? '?q=' + encodeURIComponent(query) : ''));
   }
 
   function renderHome() {
     const recent = state.recent.map(drugById).filter(Boolean);
     const ixCount = state.ixList.length;
     app.innerHTML = `
-      <div class="hero">
-        <h1 tabindex="-1">${esc(t('appName'))}</h1>
-        <p class="lead">${esc(t('appTagline'))}</p>
+      <div class="hello">
+        <h1 tabindex="-1">${esc(t('homeTitle'))}</h1>
+        <p>${esc(t('appTagline'))}</p>
       </div>
-      ${emergencyBanner()}
-      <h2 id="how">${esc(t('homeQuestion'))}</h2>
-      <nav class="cta-grid" aria-labelledby="how">
-        <a class="cta cta-primary" href="#/identify">
-          <span class="cta-icon">${icon('pill', 32)}</span>
-          <span><span class="cta-title">${esc(t('ctaPillTitle'))}</span><span class="cta-sub">${esc(t('ctaPillSub'))}</span></span>
-          <span class="cta-arrow" aria-hidden="true">›</span>
+      ${searchBar('', false)}
+      <section class="camera-card" aria-labelledby="cam-h">
+        <span class="cam-ico" aria-hidden="true">${icon('camera')}</span>
+        <h2 id="cam-h">${esc(t('takePhoto'))}</h2>
+        <p>${esc(t('takePhotoSub'))}</p>
+        <div class="btn-row">
+          <button type="button" class="btn btn-light" data-action="photo">${icon('camera')}<span>${esc(t('openCamera'))}</span></button>
+          <button type="button" class="btn btn-glass" data-action="photo" data-gallery="1">${icon('image')}<span>${esc(t('fromGallery'))}</span></button>
+        </div>
+      </section>
+      ${allergyCard()}
+      ${demoNotice()}
+      <div class="quick-grid">
+        <a class="quick" href="#/interactions">
+          <span class="tile tile-brand">${icon('layers')}</span>
+          <span class="quick-title">${esc(t('ctaIxTitle'))}</span>
+          <span class="quick-sub">${esc(t('ctaIxSub'))}</span>
+          ${ixCount ? `<span class="count-pill">${esc(t('ixBadgeCount', { n: ixCount }))}</span>` : ''}
         </a>
-        <a class="cta cta-primary" href="#/scan">
-          <span class="cta-icon">${icon('barcode', 32)}</span>
-          <span><span class="cta-title">${esc(t('ctaScanTitle'))}</span><span class="cta-sub">${esc(t('ctaScanSub'))}</span></span>
-          <span class="cta-arrow" aria-hidden="true">›</span>
-        </a>
-        <a class="cta cta-primary" href="#/search">
-          <span class="cta-icon">${icon('search', 32)}</span>
-          <span><span class="cta-title">${esc(t('ctaSearchTitle'))}</span><span class="cta-sub">${esc(t('ctaSearchSub'))}</span></span>
-          <span class="cta-arrow" aria-hidden="true">›</span>
-        </a>
-        <a class="cta cta-secondary" href="#/interactions">
-          <span class="cta-icon">${icon('layers', 30)}</span>
-          <span><span class="cta-title">${esc(t('ctaIxTitle'))}</span><span class="cta-sub">${esc(t('ctaIxSub'))}${ixCount ? ` · <strong>${esc(t('ixBadgeCount', { n: ixCount }))}</strong>` : ''}</span></span>
-          <span class="cta-arrow" aria-hidden="true">›</span>
-        </a>
-      </nav>
-      ${recent.length ? `<section class="card" style="margin-top:1.25rem" aria-labelledby="recent-h">
-        <h2 id="recent-h">${esc(t('recentTitle'))}</h2>
-        <div class="chips">${recent.map((d) => `<a class="chip" href="#/drug/${d.id}">${icon('pill', 18)}${esc(tr(d.generic))}</a>`).join('')}</div>
-      </section>` : ''}
-      <p class="trust-line">${icon('shield', 20)}<span>${esc(t('noLogin'))}</span></p>`;
+        <button type="button" class="quick" data-action="pharmacist">
+          <span class="tile tile-info">${icon('chat')}</span>
+          <span class="quick-title">${esc(t('askPharmacist'))}</span>
+          <span class="quick-sub">${esc(t('pharmSub'))}</span>
+        </button>
+      </div>
+      ${recent.length ? `<h2 class="section-label">${esc(t('recentTitle'))}</h2>
+        <div class="chips">${recent.map((d) => `<a class="chip" href="#/drug/${d.id}"><span class="chip-pill">${d.looks && d.looks[0] ? pillSvg(d.looks[0]) : ''}</span>${esc(tr(d.generic))}</a>`).join('')}</div>` : ''}
+      ${sosCard()}
+      <p class="trust-line">${icon('shield')}<span>${esc(t('noLogin'))}</span></p>`;
+    wireSearchForm(false);
     return t('appName');
   }
 
   // ----- search -----
-  // One row linking to a drug. opts: sub (second line), look (pill drawing to
-  // show, labelled for screen readers), prefix (e.g. "Possible match").
+  // One row linking to a drug. opts: sub (second line), prefix.
   function drugResultItem(d, opts = {}) {
-    const look = opts.look || (d.looks || [])[0];
+    const look = (d.looks || [])[0];
     const title = `${opts.prefix ? opts.prefix + ': ' : ''}${tr(d.generic)} ${d.strength}`;
     const sub = opts.sub || (d.brands || []).filter(isLatin).join(', ');
+    const c = drugConflicts(d)[0];
+    const flag = c ? ` <span class="badge badge-${c.level === 'cross' ? 'warn' : 'danger'}">${icon('allergy', 16)}${esc(t('allergyBadge'))}</span>` : '';
     return `<a class="result-item" href="#/drug/${d.id}">
-      <span class="ri-pill">${look ? pillSvg(look, opts.look ? lookLabel(look) : null) : ''}</span>
-      <span class="ri-main"><span class="ri-title">${esc(title)}</span>
+      <span class="ri-pill">${look ? pillSvg(look) : icon('pill')}</span>
+      <span class="ri-main"><span class="ri-title">${esc(title)}${flag}</span>
       <span class="ri-sub">${esc(sub)}</span></span>
-      <span class="cta-arrow" aria-hidden="true">›</span>
+      <span class="chev" aria-hidden="true">${icon('chevron')}</span>
     </a>`;
   }
 
   // The "what to do instead" buttons shown whenever a lookup fails.
-  function fallbackActions({ photoMode = null, photoLabel = '', typeName = true, byShape = false } = {}) {
+  function fallbackActions({ photo = false, photoLabel = '', typeName = true } = {}) {
     const out = [];
-    if (photoMode) out.push(`<button type="button" class="btn btn-primary btn-block" data-action="photo" data-mode="${photoMode}">${icon('camera')}<span>${esc(photoLabel)}</span></button>`);
+    if (photo) out.push(`<button type="button" class="btn btn-primary btn-block" data-action="photo">${icon('camera')}<span>${esc(photoLabel)}</span></button>`);
     if (typeName) out.push(`<a class="btn btn-secondary btn-block" href="#/search">${icon('search')}<span>${esc(t('typeInstead'))}</span></a>`);
-    if (byShape) out.push(`<a class="btn btn-secondary btn-block" href="#/identify">${icon('pill')}<span>${esc(t('byShape'))}</span></a>`);
     out.push(`<button type="button" class="btn btn-secondary btn-block" data-action="pharmacist">${icon('chat')}<span>${esc(t('askPharmacist'))}</span></button>`);
     return `<div class="stack">${out.join('')}</div>`;
   }
@@ -1180,25 +1215,9 @@ Respond with ONLY a JSON object:
   function renderSearch(q) {
     app.innerHTML = `
       ${screenHead(t('searchTitle'))}
-      <form class="card" id="search-form" role="search" autocomplete="off">
-        <label class="field-label" for="search-input">${esc(t('searchLabel'))}</label>
-        <div class="search-row">
-          <input id="search-input" class="input" type="search" enterkeyhint="search" placeholder="${esc(t('searchPlaceholder'))}" value="${esc(q)}" data-autofocus>
-          <button type="submit" class="btn btn-primary">${icon('search')}<span>${esc(t('searchBtn'))}</span></button>
-          <button type="button" class="btn btn-secondary btn-mic" data-action="voice" data-target="search-input" aria-pressed="false">${icon('mic')}<span class="btn-label">${esc(t('voiceBtn'))}</span></button>
-        </div>
-      </form>
+      ${searchBar(q, true)}
       <div id="search-results" aria-live="polite"></div>`;
-    const input = $('#search-input');
-    let timer = null;
-    input.addEventListener('input', () => {
-      clearTimeout(timer);
-      timer = setTimeout(() => updateSearchResults(input.value, false), 150);
-    });
-    $('#search-form').addEventListener('submit', (e) => {
-      e.preventDefault();
-      updateSearchResults(input.value, true);
-    });
+    wireSearchForm(true);
     updateSearchResults(q, false);
     return t('searchTitle');
   }
@@ -1208,9 +1227,9 @@ Respond with ONLY a JSON object:
     if (!box) return;
     try { history.replaceState(null, '', '#/search' + (q ? '?q=' + encodeURIComponent(q) : '')); } catch (e) { /* ignore */ }
     if (navStack.length) navStack[navStack.length - 1] = currentHash();
-    const query = q.trim();
+    const query = String(q || '').trim();
     if (!query) {
-      box.innerHTML = `<section class="card"><h2>${esc(t('browseAll'))}</h2><ul class="suggest-list">${DRUGS.map((d) => `<li>${drugResultItem(d)}</li>`).join('')}</ul></section>`;
+      box.innerHTML = `<h2 class="section-label">${esc(t('browseAll'))}</h2><ul class="list">${DRUGS.map((d) => `<li>${drugResultItem(d)}</li>`).join('')}</ul>`;
       return;
     }
     const { matches, suggestions } = searchDrugs(query);
@@ -1222,139 +1241,128 @@ Respond with ONLY a JSON object:
       return;
     }
     if (matches.length) {
-      box.innerHTML = `<section class="card"><h2>${esc(t('resultsCount', { n: matches.length }))}</h2>
-        <ul class="suggest-list">${matches.map((m) => `<li>${drugResultItem(m.drug, { sub: isLatin(m.term) || m.term === tr(m.drug.generic) ? '' : m.term })}</li>`).join('')}</ul></section>`;
+      box.innerHTML = `<h2 class="section-label">${esc(t('resultsCount', { n: matches.length }))}</h2>
+        <ul class="list">${matches.map((m) => `<li>${drugResultItem(m.drug, { sub: isLatin(m.term) || m.term === tr(m.drug.generic) ? '' : m.term })}</li>`).join('')}</ul>`;
       return;
     }
-    let html = `<div class="banner banner-warn" role="status"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('noResult', { q: query }))}</div></div>`;
+    let html = `<div class="banner banner-warn" role="status"><span class="ico">${icon('warn')}</span><div>${esc(t('noResult', { q: query }))}</div></div>`;
     if (suggestions.length) {
-      html += `<section class="card"><h2>${esc(t('didYouMean'))}</h2><ul class="suggest-list">${suggestions.map((x) => `<li>${drugResultItem(x.drug, { sub: x.fuzzyTerm })}</li>`).join('')}</ul></section>`;
+      html += `<h2 class="section-label">${esc(t('didYouMean'))}</h2><ul class="list" style="margin-bottom:1rem">${suggestions.map((x) => `<li>${drugResultItem(x.drug, { sub: x.fuzzyTerm })}</li>`).join('')}</ul>`;
     }
     html += `<section class="card"><ul class="tips">${t('noResultTips').map((x, i) => `<li><span class="ico" aria-hidden="true">${['🔤', '💊', '📷'][i] || '•'}</span><span>${esc(x)}</span></li>`).join('')}</ul>
       <div class="stack">
         ${state.apiKey
           ? `<button type="button" class="btn btn-primary btn-block" data-action="ask-ai" data-q="${esc(query)}">${icon('sparkle')}<span>${esc(t('askAi', { q: query }))}</span></button>`
           : `<p class="help">${esc(t('askAiNeedKey'))}</p>`}
-        ${fallbackActions({ photoMode: 'package', photoLabel: t('photoInstead'), typeName: false })}
+        ${fallbackActions({ photo: true, photoLabel: t('photoInstead'), typeName: false })}
       </div></section>`;
     box.innerHTML = html;
   }
 
-  // ----- identify -----
-  function renderIdentify() {
-    const sel = state.identify;
-    const shapes = t('shapes'), colors = t('colors');
-    app.innerHTML = `
-      ${screenHead(t('identifyTitle'))}
-      ${demoNotice()}
-      <section class="card stack">
-        <button type="button" class="btn btn-primary btn-block" data-action="photo" data-mode="pill" style="min-height:4.5rem;font-size:1.25rem">${icon('camera', 30)}<span>${esc(t('photoPill'))}</span></button>
-        <p class="help" style="text-align:center;margin:0">${esc(t('photoPillSub'))}</p>
-        <button type="button" class="btn btn-ghost btn-block" data-action="photo" data-mode="pill" data-gallery="1">${icon('image')}<span>${esc(t('fromGallery'))}</span></button>
-      </section>
-      <div class="divider">${esc(t('orManual'))}</div>
-      <section class="card">
-        <fieldset>
-          <legend>${esc(t('shape'))}</legend>
-          <div class="option-grid">${SHAPES.map((s) => `<button type="button" class="opt" data-action="opt-shape" data-value="${s}" aria-pressed="${sel.shape === s}">${pillSvg({ shape: s, colors: [] }, null, '#e6e9ec')}<span>${esc(shapes[s])}</span></button>`).join('')}</div>
-        </fieldset>
-        <fieldset>
-          <legend>${esc(t('color'))}</legend>
-          <div class="option-grid">${COLORS.map((c) => `<button type="button" class="opt" data-action="opt-color" data-value="${c}" aria-pressed="${sel.color === c}"><span class="swatch" style="background:${COLOR_HEX[c]}" aria-hidden="true"></span><span>${esc(colors[c])}</span></button>`).join('')}</div>
-        </fieldset>
-        <div class="field">
-          <label for="imprint-input">${esc(t('imprint'))}</label>
-          <input id="imprint-input" class="input" type="text" autocomplete="off" autocapitalize="characters" placeholder="${esc(t('imprintPh'))}" value="${esc(sel.imprint)}">
-        </div>
-        <button type="button" class="btn btn-ghost" data-action="clear-identify">${esc(t('clearChoices'))}</button>
-      </section>
-      <div id="identify-results" aria-live="polite"></div>`;
-    $('#imprint-input').addEventListener('input', (e) => { state.identify.imprint = e.target.value; updateIdentifyResults(); });
-    updateIdentifyResults();
-    return t('identifyTitle');
-  }
-
-  function updateIdentifyResults() {
-    const box = $('#identify-results');
-    if (!box) return;
-    const sel = state.identify;
-    $$('[data-action="opt-shape"]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.value === sel.shape)));
-    $$('[data-action="opt-color"]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.value === sel.color)));
-    if (!sel.shape && !sel.color && !sel.imprint.trim()) {
-      box.innerHTML = `<p class="muted" style="text-align:center">${esc(t('pickSomething'))}</p>`;
-      return;
+  // ----- allergies -----
+  function allergyCard() {
+    const list = state.allergies;
+    const asking = !list.length && !state.allergyNone;
+    let body;
+    if (list.length) {
+      body = `<div class="chips">${list.map((a) => `<span class="chip chip-danger">${esc(a.name)}</span>`).join('')}</div>`;
+    } else if (state.allergyNone) {
+      body = `<p>${esc(t('allergyNoneSet'))}</p>`;
+    } else {
+      body = `<p>${esc(t('allergyAsk'))}</p>`;
     }
-    const list = identifyMatches(sel);
-    if (!list.length) {
-      box.innerHTML = `<section class="card"><div class="banner banner-warn"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('noCandidates'))}</div></div>
-        ${fallbackActions({ photoMode: 'pill', photoLabel: t('photoPill') })}</section>`;
-      return;
-    }
-    box.innerHTML = `<section class="card">
-      <h2>${esc(t('candidates'))} (${list.length})</h2>
-      <div class="banner banner-warn"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('candidateWarn'))}</div></div>
-      <ul class="suggest-list">${list.map(({ drug, look }) => `<li>${drugResultItem(drug, {
-        look,
-        prefix: t('possibleMatch'),
-        sub: `${lookLabel(look)} · ${(drug.brands || []).filter(isLatin).join(', ')}`
-      })}</li>`).join('')}</ul>
+    const actions = asking
+      ? `<div class="btn-row"><a class="btn btn-primary btn-sm" href="#/allergies">${icon('plus')}<span>${esc(t('allergyAdd'))}</span></a>
+          <button type="button" class="btn btn-secondary btn-sm" data-action="al-none">${esc(t('allergyNoneBtn'))}</button></div>`
+      : `<a class="btn btn-secondary btn-sm" href="#/allergies">${esc(t('allergyEdit'))}</a>`;
+    return `<section class="allergy-card${asking ? ' asking' : ''}" aria-labelledby="al-h">
+      <div class="allergy-head"><span class="tile tile-danger">${icon('allergy')}</span><h2 id="al-h">${esc(t('allergyTitle'))}</h2></div>
+      ${body}
+      <div class="allergy-actions">${actions}</div>
     </section>`;
   }
 
-  // ----- scan -----
-  function renderScan() {
+  function renderAllergies() {
     app.innerHTML = `
-      ${screenHead(t('scanTitle'))}
-      ${demoNotice()}
-      <section class="card stack">
-        <button type="button" class="btn btn-primary btn-block" id="btn-start-camera" data-action="start-camera" style="min-height:4.5rem;font-size:1.2rem">${icon('barcode', 30)}<span>${esc(t('startCamera'))}</span></button>
-        <div id="scanner-wrap" hidden>
-          <div class="scanner"><video id="scan-video" muted playsinline aria-label="${esc(t('scanHint'))}"></video><div class="reticle" aria-hidden="true"></div></div>
-          <p class="help" style="text-align:center">${esc(t('scanHint'))}</p>
-          <button type="button" class="btn btn-secondary btn-block" data-action="stop-camera">${icon('stop')}<span>${esc(t('stopCamera'))}</span></button>
-        </div>
-        <button type="button" class="btn btn-ghost btn-block" data-action="photo" data-mode="barcode" data-gallery="1">${icon('image')}<span>${esc(t('uploadBarcode'))}</span></button>
+      ${screenHead(t('allergyTitle'))}
+      <p class="muted" style="margin-top:-.25rem">${esc(t('allergyIntro'))}</p>
+      <form id="al-form" class="searchbar" autocomplete="off">
+        ${icon('allergy')}
+        <label class="sr-only" for="al-input">${esc(t('allergyPh'))}</label>
+        <input id="al-input" type="text" enterkeyhint="done" placeholder="${esc(t('allergyPh'))}" data-autofocus>
+        <button type="button" class="round-btn btn-mic" data-action="voice" data-target="al-input" aria-pressed="false" aria-label="${esc(t('voiceBtn'))}">${icon('mic')}</button>
+        <button type="submit" class="round-btn primary" aria-label="${esc(t('allergyAdd'))}">${icon('plus')}</button>
+      </form>
+      <div id="al-suggest" aria-live="polite" style="margin:-.25rem 0 1rem"></div>
+      <h2 class="section-label">${esc(t('allergyCommon'))}</h2>
+      <div class="chips" style="margin-bottom:1.25rem">${ALLERGY_GROUPS.map((g) => `<button type="button" class="chip" data-action="al-add-group" data-id="${g.id}">${icon('plus', 18)}${esc(tr(g.name))}</button>`).join('')}</div>
+      <section class="card">
+        <div class="card-title"><h2 id="al-list-h"></h2></div>
+        <div id="al-list" aria-live="polite"></div>
       </section>
-      <div id="scan-result" aria-live="polite"></div>
-      <section class="card stack">
-        <button type="button" class="btn btn-primary btn-block" data-action="photo" data-mode="package" style="min-height:4.5rem;font-size:1.2rem">${icon('camera', 30)}<span>${esc(t('photoPackage'))}</span></button>
-        <p class="help" style="text-align:center;margin:0">${esc(t('photoPackageSub'))}</p>
-        <button type="button" class="btn btn-ghost btn-block" data-action="photo" data-mode="package" data-gallery="1">${icon('image')}<span>${esc(t('fromGallery'))}</span></button>
-      </section>`;
-    renderScanResult();
-    return t('scanTitle');
+      <p class="help" style="display:flex;gap:.4rem;align-items:flex-start">${icon('shield', 18)}<span>${esc(t('allergyPrivacy'))}</span></p>`;
+    const input = $('#al-input');
+    input.addEventListener('input', () => renderAllergySuggest(input.value, false));
+    $('#al-form').addEventListener('submit', (e) => { e.preventDefault(); submitAllergy(input.value); });
+    renderAllergyList();
+    return t('allergyTitle');
   }
 
-  function renderScanResult() {
-    const box = $('#scan-result');
-    if (!box) return;
-    const r = state.scanResult;
-    if (!r) { box.innerHTML = ''; return; }
-    if (!r.code) {
-      box.innerHTML = `<section class="card"><div class="banner banner-warn" role="alert"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('barcodeNoDecode'))}</div></div>
-        ${fallbackActions({ photoMode: 'package', photoLabel: t('photoPackage') })}</section>`;
+  // exact drug or class name → add; otherwise offer suggestions / "add as typed"
+  function submitAllergy(value) {
+    const q = String(value || '').trim();
+    if (!q) return;
+    const p = profileOfName(q);
+    if (p.drug || p.groups.length) {
+      if (addAllergy({ name: q, drugId: p.drug ? p.drug.id : null })) clearAllergyInput();
       return;
     }
-    const drug = r.drugId ? drugById(r.drugId) : null;
-    let html = `<section class="card stack"><h2>${esc(t('codeFound'))}</h2><div class="code-box">${esc(r.code)}</div>`;
-    if (drug) {
-      // a name in free text is a lead, not an identification: info, not green
-      html += `<div class="banner banner-info"><span class="ico">${icon('info', 26)}</span><div>${esc(t('codeMatchedText'))}</div></div>${drugResultItem(drug)}`;
-    } else {
-      html += `<div class="banner banner-warn"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('codeNotInDb'))}</div></div>`;
+    renderAllergySuggest(q, true);
+  }
+  function clearAllergyInput() {
+    const input = $('#al-input');
+    if (input) { input.value = ''; input.focus(); }
+    const box = $('#al-suggest');
+    if (box) box.innerHTML = '';
+    renderAllergyList();
+  }
+  function renderAllergySuggest(value, submitted) {
+    const box = $('#al-suggest');
+    if (!box) return;
+    const q = String(value || '').trim();
+    if (!q) { box.innerHTML = ''; return; }
+    const nq = norm(q);
+    const { matches, suggestions } = searchDrugs(q);
+    const drugs = (matches.length ? matches.slice(0, 4) : suggestions).map((m) => m.drug);
+    const groups = GROUP_INDEX.filter(({ terms }) => nq.length >= 2 && terms.some((x) => x.n.includes(nq))).map((x) => x.group).slice(0, 3);
+    let html = '';
+    if (drugs.length || groups.length) {
+      html += `<p class="field-label" style="margin:0 0 .4rem">${esc(matches.length || groups.length ? t('resultsCount', { n: drugs.length + groups.length }) : t('didYouMean'))}</p>
+        <div class="chips">${groups.map((g) => `<button type="button" class="chip" data-action="al-add-group" data-id="${g.id}">${icon('plus', 18)}${esc(tr(g.name))}</button>`).join('')}${drugs.map((d) => `<button type="button" class="chip" data-action="al-pick" data-id="${d.id}">${icon('plus', 18)}${esc(tr(d.generic))}</button>`).join('')}</div>`;
     }
-    if (r.reg) {
-      html += `<div class="banner banner-info"><span class="ico">${icon('shield', 26)}</span><div>${esc(t('fdaRegFound', { reg: r.reg }))}</div></div>
-        <a class="btn btn-secondary btn-block" href="${CONFIG.fdaUrl}" target="_blank" rel="noopener noreferrer">${icon('external')}<span>${esc(t('verifyFda'))}</span></a>`;
+    if (submitted || (!drugs.length && !groups.length && q.length >= 3)) {
+      html += `<div class="chips" style="margin-top:.5rem"><button type="button" class="chip" data-action="al-add-typed" data-q="${esc(q)}">${esc(t('ixAddAsTyped', { q }))}</button></div>`;
     }
-    if (r.url) {
-      const official = r.host === CONFIG.fdaHost || r.host.endsWith('.' + CONFIG.fdaHost);
-      if (!official) html += `<div class="banner banner-warn"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('linkWarn', { host: r.host }))}</div></div>`;
-      html += `<a class="btn btn-secondary btn-block" href="${esc(r.url)}" target="_blank" rel="noopener noreferrer nofollow">${icon('external')}<span>${esc(t('openLink'))}</span></a>`;
+    box.innerHTML = html;
+  }
+  function renderAllergyList() {
+    const h = $('#al-list-h'), box = $('#al-list');
+    if (!h || !box) return;
+    h.textContent = t('allergyListTitle', { n: state.allergies.length });
+    if (!state.allergies.length) {
+      box.innerHTML = state.allergyNone
+        ? `<div class="banner banner-safe" style="margin:0"><span class="ico">${icon('check')}</span><div>${esc(t('allergyNoneSet'))}</div></div>`
+        : `<p class="muted">${esc(t('allergyEmpty'))}</p>
+           <button type="button" class="btn btn-secondary btn-block" data-action="al-none">${esc(t('allergyNoneBtn'))}</button>`;
+      return;
     }
-    if (!drug) html += fallbackActions({ photoMode: 'package', photoLabel: t('photoPackage') });
-    box.innerHTML = html + '</section>';
-    box.scrollIntoView({ block: 'nearest' });
+    box.innerHTML = `<ul class="ix-list">${state.allergies.map((a, i) => {
+      const p = profileOfAllergy(a);
+      const sub = [p.drug ? `${tr(p.drug.generic)}` : '', ...p.groups.map((g) => t('allergyGroupLbl', { g: tr(groupById(g).name) }))].filter(Boolean).join(' · ') || t('allergyUnknownLbl');
+      return `<li><span class="tile tile-danger" style="width:2.6rem;height:2.6rem">${icon('allergy')}</span>
+        <span class="ix-name">${esc(a.name)}<small>${esc(sub)}</small></span>
+        <button type="button" class="ix-remove" data-action="al-remove" data-index="${i}" aria-label="${esc(t('ixRemove', { name: a.name }))}">✕</button></li>`;
+    }).join('')}</ul>`;
   }
 
   // ----- drug detail -----
@@ -1379,11 +1387,15 @@ Respond with ONLY a JSON object:
   function listItems(items) {
     return `<ul>${items.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>`;
   }
+  // A colour-coded block: tile icon + title + level label (never colour alone)
   function section(kind, iconName, title, body, badgeText) {
     return `<section class="section section-${kind}">
-      <h2>${icon(iconName, 26)}<span>${esc(title)}</span>${badgeText ? `<span class="badge badge-${kind}">${esc(badgeText)}</span>` : ''}</h2>
+      <div class="section-head"><span class="tile tile-${kind}">${icon(iconName)}</span><h2>${esc(title)}</h2>${badgeText ? `<span class="badge badge-${kind}">${esc(badgeText)}</span>` : ''}</div>
       ${body}
     </section>`;
+  }
+  function cardHead(iconName, title, id) {
+    return `<div class="section-head"><span class="tile tile-brand">${icon(iconName)}</span><h2${id ? ` id="${id}"` : ''}>${esc(title)}</h2></div>`;
   }
 
   // build a language-independent view model from DB data or AI output
@@ -1454,6 +1466,10 @@ Respond with ONLY a JSON object:
     // demo data has a made-up expiry date: never judge it as (not) expired
     const exp = ai && ai.expiry_date && !vm.demo ? parseExpiry(ai.expiry_date) : null;
     const inList = state.ixList.some((x) => (vm.kind === 'db' ? x.id === vm.drug.id : x.name === v.generic));
+    const conflicts = vm.kind === 'db'
+      ? drugConflicts(vm.drug)
+      : allergyConflicts(profileOfAiNames([ai.generic_name, ai.brand_name]), [ai.generic_name, ai.brand_name]);
+    const aiAllergy = ai && !vm.demo ? ai.allergy_warning : '';
 
     // Trust banner. Green is used only when a real AI analysis was confident
     // and its answer matched the database; demo data and low-confidence
@@ -1461,8 +1477,8 @@ Respond with ONLY a JSON object:
     const identityCertain = vm.kind === 'db' && !vm.demo && !vm.guess;
     let trust = '';
     if (vm.demo) {
-      trust = `<div class="banner banner-warn" role="alert"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('demoBadge'))}<small>${esc(t('demoBadgeSub'))}</small>
-        <button type="button" class="btn btn-secondary" style="margin-top:.5rem" data-action="settings">${esc(t('demoSetup'))}</button></div></div>`;
+      trust = `<div class="banner banner-warn" role="alert"><span class="ico">${icon('warn')}</span><div>${esc(t('demoBadge'))}<small>${esc(t('demoBadgeSub'))}</small>
+        <button type="button" class="btn btn-secondary btn-sm" style="margin-top:.6rem" data-action="settings">${esc(t('demoSetup'))}</button></div></div>`;
     } else if (vm.kind === 'ai') {
       trust = `<div class="banner banner-warn" role="note"><span class="ico">${icon('sparkle', 26)}</span><div>${esc(t('aiUnverified'))}<small>${esc(t('aiUnverifiedSub'))}</small></div></div>`;
     } else if (vm.fromAi && vm.guess) {
@@ -1480,6 +1496,7 @@ Respond with ONLY a JSON object:
       : `<span class="muted" style="padding:.5rem;text-align:center">${esc(t('noPhotoYet'))}</span>`;
 
     const badges = [
+      conflicts.length || aiAllergy ? `<span class="badge badge-${conflicts.length && conflicts[0].level === 'cross' ? 'warn' : 'danger'}">${icon('allergy', 18)}${esc(t('allergyBadge'))}</span>` : '',
       vm.demo ? `<span class="badge badge-warn">${icon('warn', 18)}${esc(t('demoShort'))}</span>`
         : identityCertain ? `<span class="badge badge-safe">${icon('shield', 18)}${esc(t('verified'))}</span>`
           : `<span class="badge badge-warn">${icon('sparkle', 18)}AI</span>`,
@@ -1489,7 +1506,7 @@ Respond with ONLY a JSON object:
 
     const aiFacts = ai && vm.fromAi && (ai.label_text || ai.pill_count !== null || ai.expiry_date || vm.photo) ? `
       <section class="section section-info">
-        <h2>${icon('sparkle', 26)}<span>${esc(vm.demo ? t('demoFactsTitle') : t('aiReadTitle'))}</span></h2>
+        <div class="section-head"><span class="tile tile-info">${icon('sparkle')}</span><h2>${esc(vm.demo ? t('demoFactsTitle') : t('aiReadTitle'))}</h2></div>
         <div class="ai-facts">
           <div class="fact"><div class="fact-label">${esc(t('pillCountLbl'))}</div><div class="fact-value fact-big">${esc(ai.pill_count !== null ? t('pillCountUnit', { n: ai.pill_count }) : t('cannotCount'))}</div></div>
           ${exp ? `<div class="fact"><div class="fact-label">${esc(t('expiryLbl'))}</div><div class="fact-value">${esc(formatExpiry(exp))}</div></div>` : ''}
@@ -1498,40 +1515,37 @@ Respond with ONLY a JSON object:
         ${ai.label_text ? `<div class="fact" style="margin-top:.75rem"><div class="fact-label">${esc(t('labelTextLbl'))}</div><div class="fact-value label-text">${esc(ai.label_text)}</div></div>` : ''}
       </section>` : '';
 
+    const heroArt = v.photoRef ? `<img src="${esc(v.photoRef)}" alt="">`
+      : v.looks.length ? pillSvg(v.looks[0]) : icon('pill');
+
     const now = new Date();
     const years = [];
     for (let y = now.getFullYear() - 3; y <= now.getFullYear() + 8; y++) years.push(y);
 
     app.innerHTML = `
       <div class="screen-head">
-        <button type="button" class="btn btn-back" data-action="back">${icon('arrowLeft')}<span>${esc(t('back'))}</span></button>
+        <button type="button" class="btn-back" data-action="back">${icon('arrowLeft')}<span>${esc(t('back'))}</span></button>
       </div>
+      ${allergyBanners(conflicts, aiAllergy)}
       ${exp && expiryStatus(exp) !== 'ok' ? expiryBanner(exp) : ''}
-      ${v.highAlert ? `<div class="banner banner-danger" role="alert"><span class="ico">${icon('danger', 26)}</span><div>${esc(t('highAlert'))}</div></div>` : ''}
+      ${v.highAlert ? `<div class="banner banner-danger" role="alert"><span class="ico">${icon('danger')}</span><div>${esc(t('highAlert'))}</div></div>` : ''}
       ${trust}
-      <header class="card drug-head">
-        <div class="eyebrow">${esc(t('genericLabel'))}</div>
-        <h1 class="drug-generic" tabindex="-1">${esc(v.generic)}</h1>
-        ${v.genericEn && v.genericEn !== v.generic ? `<p class="muted" style="margin:0 0 .4rem;font-weight:600">${esc(v.genericEn)}</p>` : ''}
+      <header class="drug-hero">
+        <div class="drug-top">
+          <span class="drug-art" aria-hidden="true">${heroArt}</span>
+          <div style="min-width:0">
+            <div class="eyebrow">${esc(t('genericLabel'))}</div>
+            <h1 class="drug-generic" tabindex="-1">${esc(v.generic)}</h1>
+            ${v.genericEn && v.genericEn !== v.generic ? `<p class="drug-en">${esc(v.genericEn)}</p>` : ''}
+          </div>
+        </div>
         ${v.brands ? `<div class="eyebrow">${esc(t('brandLabel'))}</div><p class="drug-brand">${esc(v.brands)}</p>` : ''}
         <div class="drug-meta">${badges}</div>
-        <div class="btn-row" style="margin-top:1rem">
+        <div class="btn-row">
           <button type="button" class="btn btn-primary" data-action="read-aloud" aria-pressed="false">${icon('volume')}<span class="btn-label">${esc(t('readAloud'))}</span></button>
           <button type="button" class="btn btn-secondary" data-action="add-ix" ${inList ? 'disabled' : ''}>${icon('plus')}<span>${esc(inList ? t('addedToCheck') : t('addToCheck'))}</span></button>
         </div>
       </header>
-
-      <section class="card" id="compare" aria-labelledby="cmp-h">
-        <h2 id="cmp-h">${esc(t('photoTitle'))}</h2>
-        <div class="compare">
-          <figure><div class="frame">${userFigure}</div><figcaption>${esc(t('yourPhoto'))}</figcaption></figure>
-          <figure><div class="frame">${refFigure}</div><figcaption>${esc(t('referenceImg'))}</figcaption></figure>
-        </div>
-        ${v.looks.length > 1 ? `<div class="looks-row" style="margin-top:.6rem">${v.looks.map((l) => pillSvg(l, lookLabel(l))).join('')}</div>` : ''}
-        ${v.appearance ? `<p style="margin:.75rem 0 0"><strong>${esc(t('appearanceLabel'))}:</strong> ${esc(v.appearance)}</p>` : ''}
-        ${!v.photoRef && v.looks.length ? `<p class="compare-note">${esc(t('illustrationNote'))}</p>` : ''}
-        <button type="button" class="btn btn-secondary btn-block" style="margin-top:.75rem" data-action="compare-photo" data-id="${esc(vm.compareId)}">${icon('camera')}<span>${esc(t('comparePhoto'))}</span></button>
-      </section>
 
       ${v.indications ? section('safe', 'check', t('indicationsTitle'), `<p>${esc(v.indications)}</p>`, t('levelSafe')) : ''}
       ${v.usage ? section('safe', 'clipboard', t('usageTitle'), `<p>${esc(v.usage)}</p>`, t('levelSafe')) : ''}
@@ -1540,12 +1554,24 @@ Respond with ONLY a JSON object:
       ${v.sideEffects.length ? section('warn', 'info', t('sideTitle'), listItems(v.sideEffects), t('levelCaution')) : ''}
       ${v.dangers.length ? section('danger', 'danger', t('dangerTitle'), listItems(v.dangers), t('levelDanger')) : ''}
       ${section('danger', 'phone', t('urgentTitle'), listItems([...v.urgent, t('allergyUrgent')]) +
-        `<div class="btn-row" style="margin-top:.75rem"><a class="btn btn-call" href="tel:${CONFIG.emergencyTel}">${icon('phone')}<span>${esc(t('call1669'))}</span></a><a class="btn btn-call-outline" href="tel:${CONFIG.poisonTel}">${icon('phone')}<span>${esc(t('call1367'))}</span></a></div>`, t('levelDanger'))}
+        `<div class="btn-row" style="margin-top:.85rem"><a class="btn btn-call btn-sm" href="tel:${CONFIG.emergencyTel}">${icon('phone')}<span>${esc(t('call1669'))}</span></a><a class="btn btn-call-outline btn-sm" href="tel:${CONFIG.poisonTel}">${icon('phone')}<span>${esc(t('call1367'))}</span></a></div>`, t('levelDanger'))}
+
+      <section class="card" id="compare" aria-labelledby="cmp-h">
+        ${cardHead('image', t('photoTitle'), 'cmp-h')}
+        <div class="compare">
+          <figure><div class="frame">${userFigure}</div><figcaption>${esc(t('yourPhoto'))}</figcaption></figure>
+          <figure><div class="frame">${refFigure}</div><figcaption>${esc(t('referenceImg'))}</figcaption></figure>
+        </div>
+        ${v.looks.length > 1 ? `<div class="looks-row">${v.looks.map((l) => pillSvg(l, lookLabel(l))).join('')}</div>` : ''}
+        ${v.appearance ? `<p style="margin:.75rem 0 0"><strong>${esc(t('appearanceLabel'))}:</strong> ${esc(v.appearance)}</p>` : ''}
+        ${!v.photoRef && v.looks.length ? `<p class="compare-note">${esc(t('illustrationNote'))}</p>` : ''}
+        <button type="button" class="btn btn-secondary btn-block" style="margin-top:.85rem" data-action="compare-photo" data-id="${esc(vm.compareId)}">${icon('camera')}<span>${esc(t('comparePhoto'))}</span></button>
+      </section>
 
       <section class="card" aria-labelledby="exp-h">
-        <h2 id="exp-h">${icon('calendar', 24)} ${esc(t('checkExpiry'))}</h2>
-        <p class="help">${esc(t('checkExpirySub'))}</p>
-        <div class="expiry-row">
+        ${cardHead('calendar', t('checkExpiry'), 'exp-h')}
+        <p class="help" style="margin-top:0">${esc(t('checkExpirySub'))}</p>
+        <div class="expiry-row" style="margin-top:.75rem">
           <div class="field"><label for="exp-month">${esc(t('month'))}</label>
             <select id="exp-month" class="input"><option value="">—</option>${t('months').map((m, i) => `<option value="${i + 1}" ${exp && exp.m === i + 1 ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></div>
           <div class="field"><label for="exp-year">${esc(t('year'))}</label>
@@ -1555,9 +1581,9 @@ Respond with ONLY a JSON object:
       </section>
 
       <section class="card sources" aria-labelledby="src-h">
-        <h2 id="src-h">${icon('shield', 24)} ${esc(t('sourcesTitle'))}</h2>
+        ${cardHead('shield', t('sourcesTitle'), 'src-h')}
         ${vm.kind === 'db'
-          ? `<ul>${(vm.drug.sources || []).map((s) => `<li>${esc(tr(s))}</li>`).join('')}</ul><p class="muted">${esc(t('reviewed', { d: vm.drug.reviewed || '-' }))}</p>`
+          ? `<ul>${(vm.drug.sources || []).map((x) => `<li>${esc(tr(x))}</li>`).join('')}</ul><p class="muted">${esc(t('reviewed', { d: vm.drug.reviewed || '-' }))}</p>`
           : `<p>${esc(t('sourceAi'))}</p>`}
         <a href="${CONFIG.fdaUrl}" target="_blank" rel="noopener noreferrer">${esc(t('openFda'))} ↗</a>
       </section>
@@ -1569,7 +1595,8 @@ Respond with ONLY a JSON object:
 
     // wire up the screen
     const readBtn = $('[data-action="read-aloud"]', app);
-    readBtn.addEventListener('click', () => readAloud(speechText(v, vm), readBtn));
+    const spokenAllergy = conflicts.length ? conflicts.map((c) => conflictText(c).title).join('. ') : aiAllergy ? t('conflictAi', { w: aiAllergy }) : '';
+    readBtn.addEventListener('click', () => readAloud([spokenAllergy, speechText(v, vm)].filter(Boolean).join('. '), readBtn));
     $('[data-action="add-ix"]', app).addEventListener('click', (e) => {
       addToIxList(vm.kind === 'db' ? { name: tr(vm.drug.generic), id: vm.drug.id } : { name: v.generic, id: null });
       e.currentTarget.disabled = true;
@@ -1589,24 +1616,18 @@ Respond with ONLY a JSON object:
 
   // ----- not found / fallback -----
   function renderNotFound() {
-    const f = state.fallback || { reason: 'not_found', mode: 'pill' };
+    const f = state.fallback || { reason: 'not_found', mode: 'photo' };
     const issues = t('issues');
     const guess = f.guess && state.analysis && (state.analysis.ai.generic_name || state.analysis.ai.brand_name);
-    const retakeMode = f.mode === 'package' ? 'package' : 'pill';
     app.innerHTML = `
       ${screenHead(t('nfTitle'))}
-      <div class="banner banner-warn" role="alert"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('nfReason', { r: issues[f.reason] || issues.not_found }))}</div></div>
+      <div class="banner banner-warn" role="alert"><span class="ico">${icon('warn')}</span><div>${esc(t('nfReason', { r: issues[f.reason] || issues.not_found }))}</div></div>
       ${guess ? `<section class="card"><p><strong>${esc(t('aiGuess', { name: guess }))}</strong></p>
         <a class="btn btn-secondary btn-block" href="#/result">${icon('sparkle')}<span>${esc(t('viewAnyway'))}</span></a></section>` : ''}
       <section class="card">
         <h2>${esc(t('nfSub'))}</h2>
         <ul class="tips">${t('tips').map((x, i) => `<li><span class="ico" aria-hidden="true">${['💡', '📄', '🔍', '✋'][i] || '•'}</span><span>${esc(x)}</span></li>`).join('')}</ul>
-        <div class="stack">
-          ${f.mode !== 'name' ? `<button type="button" class="btn btn-primary btn-block" data-action="photo" data-mode="${retakeMode}">${icon('camera')}<span>${esc(t('retake'))}</span></button>` : ''}
-          <a class="btn btn-secondary btn-block" href="#/search">${icon('search')}<span>${esc(t('typeInstead'))}</span></a>
-          <a class="btn btn-secondary btn-block" href="#/identify">${icon('pill')}<span>${esc(t('byShape'))}</span></a>
-          <button type="button" class="btn btn-secondary btn-block" data-action="pharmacist">${icon('chat')}<span>${esc(t('askPharmacist'))}</span></button>
-        </div>
+        ${fallbackActions({ photo: f.mode !== 'name', photoLabel: t('retake') })}
       </section>`;
     return t('nfTitle');
   }
@@ -1629,23 +1650,19 @@ Respond with ONLY a JSON object:
   function renderInteractions() {
     app.innerHTML = `
       ${screenHead(t('ixTitle'))}
-      <p class="lead">${esc(t('ixSub'))}</p>
+      <p class="muted" style="margin-top:-.25rem">${esc(t('ixSub'))}</p>
+      <form id="ix-form" class="searchbar" autocomplete="off">
+        ${icon('pill')}
+        <label class="sr-only" for="ix-input">${esc(t('ixLabel'))}</label>
+        <input id="ix-input" type="text" enterkeyhint="done" placeholder="${esc(t('ixPlaceholder'))}" data-autofocus>
+        <button type="button" class="round-btn btn-mic" data-action="voice" data-target="ix-input" aria-pressed="false" aria-label="${esc(t('voiceBtn'))}">${icon('mic')}</button>
+        <button type="submit" class="round-btn primary" aria-label="${esc(t('ixAdd'))}">${icon('plus')}</button>
+      </form>
+      <div id="ix-suggest" aria-live="polite" style="margin:-.25rem 0 1rem"></div>
       <section class="card">
-        <form id="ix-form" autocomplete="off">
-          <label class="field-label" for="ix-input">${esc(t('ixLabel'))}</label>
-          <div class="search-row">
-            <input id="ix-input" class="input" type="text" enterkeyhint="done" placeholder="${esc(t('ixPlaceholder'))}" data-autofocus>
-            <button type="submit" class="btn btn-primary">${icon('plus')}<span>${esc(t('ixAdd'))}</span></button>
-            <button type="button" class="btn btn-secondary btn-mic" data-action="voice" data-target="ix-input" aria-pressed="false">${icon('mic')}<span class="btn-label">${esc(t('voiceBtn'))}</span></button>
-          </div>
-          <div id="ix-suggest" aria-live="polite"></div>
-        </form>
-        <h2 style="margin-top:1.25rem" id="ix-list-h"></h2>
+        <div class="card-title"><h2 id="ix-list-h"></h2><button type="button" class="btn btn-ghost btn-sm" data-action="ix-clear">${esc(t('ixClear'))}</button></div>
         <div id="ix-list"></div>
-        <div class="btn-row" style="margin-top:1rem">
-          <button type="button" class="btn btn-primary" data-action="ix-check">${icon('layers')}<span>${esc(t('ixCheck'))}</span></button>
-          <button type="button" class="btn btn-ghost" data-action="ix-clear">${esc(t('ixClear'))}</button>
-        </div>
+        <button type="button" class="btn btn-primary btn-block" style="margin-top:1rem" data-action="ix-check">${icon('layers')}<span>${esc(t('ixCheck'))}</span></button>
       </section>
       <div id="ix-results" aria-live="polite"></div>`;
     const input = $('#ix-input');
@@ -1684,7 +1701,7 @@ Respond with ONLY a JSON object:
     const list = matches.length ? matches.slice(0, 5) : suggestions;
     let html = '';
     if (list.length) {
-      html += `<p class="field-label" style="margin:.75rem 0 .4rem">${esc(matches.length ? t('resultsCount', { n: list.length }) : t('didYouMean'))}</p>
+      html += `<p class="field-label" style="margin:0 0 .4rem">${esc(matches.length ? t('resultsCount', { n: list.length }) : t('didYouMean'))}</p>
         <div class="chips">${list.map((m) => `<button type="button" class="chip" data-action="ix-pick" data-id="${m.drug.id}">${icon('plus', 18)}${esc(tr(m.drug.generic))}</button>`).join('')}</div>`;
     } else if (submitted) {
       html += `<p class="help" style="margin-top:.75rem">${esc(t('noResult', { q }))}</p>`;
@@ -1703,7 +1720,7 @@ Respond with ONLY a JSON object:
     box.innerHTML = `<ul class="ix-list">${state.ixList.map((x, i) => {
       const d = x.id ? drugById(x.id) : null;
       const sub = d ? (norm(tr(d.generic)) !== norm(x.name) ? `${tr(d.generic)} ${d.strength}` : d.strength) : t('ixUnknown');
-      return `<li><span class="ri-pill" style="width:2.6rem;height:2.6rem;flex:none">${d && d.looks[0] ? pillSvg(d.looks[0]) : icon('pill', 30)}</span>
+      return `<li><span class="ri-pill">${d && d.looks[0] ? pillSvg(d.looks[0]) : icon('pill', 30)}</span>
         <span class="ix-name">${esc(x.name)}<small>${d ? '' : '⚠ '}${esc(sub)}</small></span>
         <button type="button" class="ix-remove" data-action="ix-remove" data-index="${i}" aria-label="${esc(t('ixRemove', { name: x.name }))}">✕</button></li>`;
     }).join('')}</ul>`;
@@ -1723,6 +1740,16 @@ Respond with ONLY a JSON object:
     const r = state.ixResult;
     if (!r) { box.innerHTML = ''; return; }
     let html = `<section class="card"><h2>${esc(t('ixResultTitle'))}</h2>`;
+    const allergyHits = state.ixList.map((x) => {
+      const d = x.id ? drugById(x.id) : null;
+      const c = (d ? allergyConflicts(profileOfDrug(d), [x.name]) : allergyConflicts(profileOfName(x.name), [x.name]))[0];
+      return c ? { item: x, c } : null;
+    }).filter(Boolean);
+    html += allergyHits.map(({ item, c }) => {
+      const li = levelInfo(c.level === 'cross' ? 'moderate' : 'major');
+      return `<div class="ix-result ${li.cls}"><h3>${icon('allergy', 24)}<span>${esc(t('allergyBadge'))}</span></h3>
+        <p style="font-weight:700;margin-bottom:.25rem">${esc(t('ixAllergy', { d: item.name, a: c.allergy.name }))}</p><p>${esc(conflictText(c).title)}</p></div>`;
+    }).join('');
     if (r.results.length) {
       html += r.results.map((x) => {
         const li = levelInfo(x.level);
@@ -1732,11 +1759,11 @@ Respond with ONLY a JSON object:
         return `<div class="ix-result ${li.cls}"><h3>${icon(li.icon, 24)}<span>${esc(li.label)}</span></h3>
           <p style="font-weight:700;margin-bottom:.25rem">${esc(x.a.name)} + ${esc(x.b.name)}</p><p>${esc(body)}</p></div>`;
       }).join('');
-    } else if (!r.unknown.length) {
+    } else if (!r.unknown.length && !allergyHits.length) {
       html += `<div class="ix-result ix-none"><h3>${icon('check', 24)}<span>${esc(t('ixNone'))}</span></h3><p>${esc(t('ixNoneSub'))}</p></div>`;
     }
     if (r.unknown.length) {
-      html += `<div class="banner banner-warn"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('ixUnknownNote', { list: r.unknown.map((x) => x.name).join(', ') }))}</div></div>`;
+      html += `<div class="banner banner-warn"><span class="ico">${icon('warn')}</span><div>${esc(t('ixUnknownNote', { list: r.unknown.map((x) => x.name).join(', ') }))}</div></div>`;
       html += state.apiKey
         ? `<button type="button" class="btn btn-secondary btn-block" data-action="ix-ai">${icon('sparkle')}<span>${esc(t('ixAskAi'))}</span></button>`
         : `<p class="help">${esc(t('askAiNeedKey'))}</p>`;
@@ -1751,7 +1778,7 @@ Respond with ONLY a JSON object:
       }).join('') : `<p>${esc(t('ixAiNone'))}</p>`;
       if (state.ixAi.note) html += `<p class="help">${esc(state.ixAi.note)}</p>`;
     }
-    html += `<div class="banner banner-info" style="margin-top:1rem"><span class="ico">${icon('info', 26)}</span><div>${esc(t('ixDontStop'))}</div></div>
+    html += `<div class="banner banner-info" style="margin-top:1rem"><span class="ico">${icon('info')}</span><div>${esc(t('ixDontStop'))}</div></div>
       <button type="button" class="btn btn-secondary btn-block" data-action="pharmacist">${icon('chat')}<span>${esc(t('askPharmacist'))}</span></button></section>`;
     box.innerHTML = html;
   }
@@ -1761,7 +1788,12 @@ Respond with ONLY a JSON object:
     const job = beginAiJob();
     showOverlay(t('searchingAi'), t('analyzingSub'));
     try {
-      const raw = await geminiCall([{ text: interactionPrompt(state.ixList.map((x) => x.name)) }], job.controller.signal);
+      const names = state.ixList.map((x) => String(x.name).slice(0, 120));
+      const raw = await claudeJson({
+        system: interactionSystemPrompt(),
+        content: [{ type: 'text', text: `Medicines taken together: ${JSON.stringify(names)}` }],
+        schema: INTERACTION_SCHEMA
+      }, job.controller.signal);
       const obj = Array.isArray(raw) ? { interactions: raw } : raw && typeof raw === 'object' ? raw : {};
       const list = Array.isArray(obj.interactions) ? obj.interactions.filter((x) => x && typeof x === 'object') : [];
       state.ixAi = {
@@ -1778,7 +1810,7 @@ Respond with ONLY a JSON object:
       const box = $('#ix-results');
       if (box) box.scrollIntoView({ block: 'start' });
     } catch (err) {
-      handleAiFailure(job, err);
+      handleAiFailure(job, err, runIxAi);
     } finally {
       if (aiJob === job) hideOverlay();
       endAiJob(job);
@@ -1786,25 +1818,30 @@ Respond with ONLY a JSON object:
   }
 
   // ------------------------------------------------------------------
-  // Dialogs
+  // Dialogs (bottom sheets)
   // ------------------------------------------------------------------
   function openDialog(dlg) {
-    if (typeof dlg.showModal === 'function') dlg.showModal();
+    if (typeof dlg.showModal === 'function') { if (!dlg.open) dlg.showModal(); }
     else dlg.setAttribute('open', '');
+  }
+  function closeDialog(dlg) {
+    if (typeof dlg.close === 'function') dlg.close();
+    else dlg.removeAttribute('open');
   }
   function openSettings() {
     $('#api-key').value = state.apiKey;
     $('#api-model').value = state.model || CONFIG.defaultModel;
     openDialog($('#dlg-settings'));
   }
+  // help sheet: emergency numbers first, then pharmacist options
   function openPharmacist() {
-    const opts = [];
+    const opts = [`<div class="banner banner-danger" style="margin:0"><span class="ico">${icon('danger')}</span><div>${esc(t('emergencyTitle'))}<small>${esc(t('emergencyText'))}</small></div></div>`];
+    opts.push(`<a class="btn btn-call btn-block" href="tel:${CONFIG.emergencyTel}">${icon('phone')}<span>${esc(t('pharmEmergency'))}</span></a>`);
+    opts.push(`<a class="btn btn-call-outline btn-block" href="tel:${CONFIG.poisonTel}">${icon('phone')}<span>${esc(t('pharmPoison'))}</span></a>`);
     if (CONFIG.pharmacistChatUrl) {
       opts.push(`<a class="btn btn-primary btn-block" href="${esc(CONFIG.pharmacistChatUrl)}" target="_blank" rel="noopener noreferrer">${icon('chat')}<span>${esc(t('pharmChat'))}</span></a>`);
     }
-    opts.push(`<a class="btn ${CONFIG.pharmacistChatUrl ? 'btn-secondary' : 'btn-primary'} btn-block" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(t('pharmacyQuery'))}" target="_blank" rel="noopener noreferrer">${icon('pin')}<span>${esc(t('pharmNearby'))}</span></a>`);
-    opts.push(`<a class="btn btn-secondary btn-block" href="tel:${CONFIG.poisonTel}">${icon('phone')}<span>${esc(t('pharmPoison'))}</span></a>`);
-    opts.push(`<a class="btn btn-call btn-block" href="tel:${CONFIG.emergencyTel}">${icon('phone')}<span>${esc(t('pharmEmergency'))}</span></a>`);
+    opts.push(`<a class="btn btn-secondary btn-block" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(t('pharmacyQuery'))}" target="_blank" rel="noopener noreferrer">${icon('pin')}<span>${esc(t('pharmNearby'))}</span></a>`);
     $('#pharm-options').innerHTML = opts.join('');
     openDialog($('#dlg-pharmacist'));
   }
@@ -1817,46 +1854,58 @@ Respond with ONLY a JSON object:
     root.lang = t('htmlLang');
     root.style.fontSize = FONT_SCALES[state.fontIdx] + '%';
     root.dataset.contrast = state.contrast === 'high' ? 'high' : 'normal';
-    $('meta[name="theme-color"]').setAttribute('content', state.contrast === 'high' ? '#000000' : '#3d5a1e');
+    $('meta[name="theme-color"]').setAttribute('content', state.contrast === 'high' ? '#000000' : '#f3f6f5');
     $$('[data-i18n]').forEach((el) => { const v = t(el.dataset.i18n); if (typeof v === 'string') el.textContent = v; });
     $$('[data-i18n-aria]').forEach((el) => { const v = t(el.dataset.i18nAria); if (typeof v === 'string') el.setAttribute('aria-label', v); });
-    $('#lang-select').value = state.lang;
-    $('#btn-font-down').disabled = state.fontIdx <= 0;
-    $('#btn-font-up').disabled = state.fontIdx >= FONT_SCALES.length - 1;
-    $('#btn-contrast').setAttribute('aria-pressed', String(state.contrast === 'high'));
+    $$('[data-icon]').forEach((el) => { if (!el.firstElementChild) el.innerHTML = icon(el.dataset.icon); });
+    // display sheet state
+    const names = t('sizeNames');
+    $('#size-options').innerHTML = FONT_SCALES.map((_, i) => `<button type="button" data-size="${i}" aria-pressed="${i === state.fontIdx}" aria-label="${esc(names[i])}" style="font-size:${(0.85 + i * 0.25).toFixed(2)}rem">${esc(t('sizeGlyph'))}</button>`).join('');
+    $$('#lang-options [data-lang]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.lang === state.lang)));
+    $('#btn-contrast').setAttribute('aria-checked', String(state.contrast === 'high'));
   }
 
   // ------------------------------------------------------------------
   // Events
   // ------------------------------------------------------------------
-  $('#lang-select').addEventListener('change', (e) => {
-    state.lang = I18N[e.target.value] ? e.target.value : 'th';
+  $('#btn-display').addEventListener('click', () => openDialog($('#dlg-display')));
+  $('#size-options').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-size]');
+    if (!b) return;
+    state.fontIdx = Number(b.dataset.size);
+    store.set('fontIdx', state.fontIdx);
+    applyPrefs();
+    const again = $(`#size-options [data-size="${state.fontIdx}"]`);
+    if (again) again.focus();
+  });
+  $('#lang-options').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-lang]');
+    if (!b) return;
+    state.lang = I18N[b.dataset.lang] ? b.dataset.lang : 'th';
     store.set('lang', state.lang);
     applyPrefs();
     render(false);
   });
-  $('#btn-font-down').addEventListener('click', () => {
-    state.fontIdx = Math.max(0, state.fontIdx - 1); store.set('fontIdx', state.fontIdx); applyPrefs();
-  });
-  $('#btn-font-up').addEventListener('click', () => {
-    state.fontIdx = Math.min(FONT_SCALES.length - 1, state.fontIdx + 1); store.set('fontIdx', state.fontIdx); applyPrefs();
-  });
   $('#btn-contrast').addEventListener('click', () => {
-    state.contrast = state.contrast === 'high' ? 'normal' : 'high'; store.set('contrast', state.contrast); applyPrefs();
+    state.contrast = state.contrast === 'high' ? 'normal' : 'high';
+    store.set('contrast', state.contrast);
+    applyPrefs();
   });
   $('#btn-settings').addEventListener('click', openSettings);
+  $('#btn-fab-camera').addEventListener('click', () => requestPhoto('photo'));
+  $('#btn-tab-help').addEventListener('click', openPharmacist);
   $('#btn-cancel-ai').addEventListener('click', () => { cancelAiJob(); hideOverlay(); });
   $('#btn-save-settings').addEventListener('click', () => {
     state.apiKey = $('#api-key').value.trim();
     state.model = $('#api-model').value.trim() || CONFIG.defaultModel;
-    if (state.apiKey) store.set('apiKey', state.apiKey); else store.del('apiKey');
-    store.set('model', state.model);
-    $('#dlg-settings').close();
+    if (state.apiKey) store.set('anthropicKey', state.apiKey); else store.del('anthropicKey');
+    store.set('claudeModel', state.model);
+    closeDialog($('#dlg-settings'));
     toast(t('saved'));
     render(false);
   });
   $('#btn-clear-key').addEventListener('click', () => {
-    state.apiKey = ''; $('#api-key').value = ''; store.del('apiKey');
+    state.apiKey = ''; $('#api-key').value = ''; store.del('anthropicKey');
     toast(t('keyCleared'));
     render(false);
   });
@@ -1867,35 +1916,23 @@ Respond with ONLY a JSON object:
   app.addEventListener('click', (e) => {
     const el = e.target.closest('[data-action]');
     if (!el || !app.contains(el)) return;
-    const a = el.dataset.action;
-    switch (a) {
+    switch (el.dataset.action) {
       case 'back': goBack(); break;
       case 'settings': openSettings(); break;
       case 'pharmacist': openPharmacist(); break;
-      case 'photo': requestPhoto(el.dataset.mode, { gallery: !!el.dataset.gallery }); break;
+      case 'photo': requestPhoto('photo', { gallery: !!el.dataset.gallery }); break;
       case 'compare-photo': requestPhoto('compare', { compareId: el.dataset.id }); break;
-      case 'start-camera': startCamera(); break;
-      case 'stop-camera': stopCamera(); break;
       case 'ask-ai': askAiByName(el.dataset.q); break;
       case 'voice': {
         const input = document.getElementById(el.dataset.target);
         startVoice(el, (text) => {
-          input.value = text;
-          if (el.dataset.target === 'search-input') updateSearchResults(text, true);
+          if (input) input.value = text;
+          if (el.dataset.target === 'search-input') submitSearch(text);
+          else if (el.dataset.target === 'al-input') submitAllergy(text);
           else submitIx(text);
         });
         break;
       }
-      case 'opt-shape':
-        state.identify.shape = state.identify.shape === el.dataset.value ? null : el.dataset.value;
-        updateIdentifyResults(); break;
-      case 'opt-color':
-        state.identify.color = state.identify.color === el.dataset.value ? null : el.dataset.value;
-        updateIdentifyResults(); break;
-      case 'clear-identify':
-        state.identify = { shape: null, color: null, imprint: '' };
-        $('#imprint-input').value = '';
-        updateIdentifyResults(); break;
       case 'ix-pick': {
         const d = drugById(el.dataset.id);
         if (d && addToIxList({ name: tr(d.generic), id: d.id })) clearIxInput();
@@ -1922,24 +1959,46 @@ Respond with ONLY a JSON object:
         $('#ix-results').scrollIntoView({ block: 'start' });
         break;
       case 'ix-ai': runIxAi(); break;
+      case 'al-add-group': {
+        const g = groupById(el.dataset.id);
+        if (g && addAllergy({ name: tr(g.name), groupId: g.id })) clearAllergyInput();
+        break;
+      }
+      case 'al-pick': {
+        const d = drugById(el.dataset.id);
+        if (d && addAllergy({ name: tr(d.generic), drugId: d.id })) clearAllergyInput();
+        break;
+      }
+      case 'al-add-typed':
+        if (addAllergy({ name: el.dataset.q })) clearAllergyInput();
+        break;
+      case 'al-remove':
+        state.allergies.splice(Number(el.dataset.index), 1);
+        saveAllergies();
+        renderAllergyList();
+        break;
+      case 'al-none':
+        state.allergies = [];
+        state.allergyNone = true;
+        saveAllergies();
+        toast(t('saved'));
+        if ($('#al-list')) renderAllergyList(); else render(false);
+        break;
       default: break;
     }
   });
 
-  // drag & drop a photo onto the identify / scan screens (desktop)
-  // (files dropped elsewhere are ignored instead of opening in the tab)
+  // drag & drop a photo anywhere (desktop) analyses it; never navigate away
   document.addEventListener('dragover', (e) => e.preventDefault());
   document.addEventListener('drop', (e) => {
     e.preventDefault();
-    const r = parseRoute().name;
-    if (r !== 'identify' && r !== 'scan') return;
     const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
     if (!file) return;
-    state.pendingPhoto = { mode: r === 'scan' ? 'package' : 'pill' };
+    state.pendingPhoto = { mode: 'photo' };
     handlePhotoFile(file);
   });
 
-  window.addEventListener('pagehide', () => { stopCamera(); stopSpeaking(); });
+  window.addEventListener('pagehide', () => { stopSpeaking(); stopVoice(); });
 
   // ------------------------------------------------------------------
   // Start
@@ -1949,5 +2008,5 @@ Respond with ONLY a JSON object:
   render(false);
 
   // exposed for tests / debugging
-  window.AIPill = { searchDrugs, identifyMatches, checkInteractions, parseExpiry, handleCode, state, CONFIG };
+  window.AIPill = { searchDrugs, checkInteractions, parseExpiry, allergyConflicts, profileOfName, profileOfDrug, state, CONFIG };
 })();

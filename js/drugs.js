@@ -15,14 +15,16 @@
  *   generic      generic name per language
  *   brands       trade names and common aliases (any language, used for search)
  *   aliases      other names for THIS exact drug (nicknames, misspellings)
+ *   allergyGroups  drug classes for allergy checks (see ALLERGY_GROUPS): an
+ *                allergy to any member of a class is treated as an allergy
+ *                to the whole class
  *   categories   broad words such as "ยาเบาหวาน" or "statin". They only list the
  *                drug as a candidate; they never open it directly or identify a
  *                scanned / AI-read name, because other drugs share the category.
- *   barcodes     optional EAN/GTIN codes printed on the package
  *   strength     usual strength shown in the database
  *   form         tablet | capsule
- *   looks        typical appearances for the pill identifier. Appearance
- *                differs by manufacturer, so results are only candidates.
+ *   looks        typical appearances, drawn as the reference picture on the
+ *                drug page. Appearance differs by manufacturer.
  *   photo        optional URL of a real product photo (from an official source)
  *   highAlert    true for high-alert medicines (shown with a red banner)
  *   indications / usage / appearance            text per language
@@ -98,6 +100,7 @@
 
     {
       id: 'ibuprofen',
+      allergyGroups: ['nsaid'],
       ingredient: 'ibuprofen',
       group: 'nsaid',
       generic: L('ไอบูโพรเฟน', 'Ibuprofen', '布洛芬'),
@@ -149,6 +152,7 @@
 
     {
       id: 'aspirin-81',
+      allergyGroups: ['nsaid'],
       ingredient: 'aspirin',
       group: 'antiplatelet',
       generic: L('แอสไพริน (ขนาดต่ำ)', 'Aspirin (low dose)', '阿司匹林（低剂量）'),
@@ -342,6 +346,7 @@
 
     {
       id: 'amoxicillin',
+      allergyGroups: ['penicillin'],
       ingredient: 'amoxicillin',
       group: 'penicillin',
       generic: L('อะม็อกซีซิลลิน', 'Amoxicillin', '阿莫西林'),
@@ -390,6 +395,7 @@
 
     {
       id: 'ciprofloxacin',
+      allergyGroups: ['quinolone'],
       ingredient: 'ciprofloxacin',
       group: 'quinolone',
       generic: L('ไซโปรฟลอกซาซิน', 'Ciprofloxacin', '环丙沙星'),
@@ -748,5 +754,49 @@
     }
   ];
 
-  window.DRUG_DB = { DRUGS, INTERACTIONS, L };
+  /*
+   * Drug classes used for allergy checks. `terms` are names of members (in
+   * any language) so free-text allergies such as "Augmentin" or "ซัลฟา" map
+   * to a class. `cross` lists classes with a known, lower cross-allergy risk
+   * (shown in orange, not red).
+   */
+  const ALLERGY_GROUPS = [
+    {
+      id: 'penicillin',
+      name: L('ยากลุ่มเพนิซิลลิน', 'Penicillins', '青霉素类'),
+      terms: ['penicillin', 'penicillins', 'เพนิซิลลิน', 'เพนนิซิลลิน', 'amoxicillin', 'ampicillin', 'cloxacillin', 'dicloxacillin',
+        'piperacillin', 'augmentin', 'amoxicillin clavulanate', 'co-amoxiclav', 'อะม็อกซีซิลลิน', 'แอมพิซิลลิน', 'คล็อกซาซิลลิน'],
+      cross: ['cephalosporin']
+    },
+    {
+      id: 'cephalosporin',
+      name: L('ยากลุ่มเซฟาโลสปอริน', 'Cephalosporins', '头孢菌素类'),
+      terms: ['cephalosporin', 'cephalosporins', 'เซฟาโลสปอริน', 'cephalexin', 'cefalexin', 'cefadroxil', 'cefuroxime', 'cefdinir',
+        'cefixime', 'ceftriaxone', 'cefazolin', 'เซฟาเลกซิน', 'เซฟไตรอะโซน'],
+      cross: ['penicillin']
+    },
+    {
+      id: 'nsaid',
+      name: L('ยาแก้ปวดกลุ่ม NSAIDs (รวมแอสไพริน)', 'NSAID painkillers (incl. aspirin)', '非甾体抗炎药（含阿司匹林）'),
+      terms: ['nsaid', 'nsaids', 'เอ็นเสด', 'ibuprofen', 'diclofenac', 'naproxen', 'mefenamic acid', 'mefenamic', 'piroxicam', 'meloxicam',
+        'indomethacin', 'ketoprofen', 'aspirin', 'แอสไพริน', 'ไอบูโพรเฟน', 'ไดโคลฟีแนค', 'นาพรอกเซน', 'กรดเมเฟนามิก', 'ponstan', 'voltaren', 'brufen'],
+      cross: []
+    },
+    {
+      id: 'sulfonamide',
+      name: L('ยาซัลฟา (ซัลโฟนาไมด์)', 'Sulfa drugs (sulfonamides)', '磺胺类药物'),
+      terms: ['sulfa', 'sulpha', 'sulfonamide', 'sulphonamide', 'ซัลฟา', 'co-trimoxazole', 'cotrimoxazole', 'bactrim', 'sulfamethoxazole',
+        'sulfasalazine', 'โคไตรม็อกซาโซล'],
+      cross: []
+    },
+    {
+      id: 'quinolone',
+      name: L('ยากลุ่มควิโนโลน', 'Quinolones', '喹诺酮类'),
+      terms: ['quinolone', 'quinolones', 'fluoroquinolone', 'ควิโนโลน', 'ciprofloxacin', 'levofloxacin', 'norfloxacin', 'ofloxacin',
+        'moxifloxacin', 'ไซโปรฟลอกซาซิน', 'นอร์ฟลอกซาซิน'],
+      cross: []
+    }
+  ];
+
+  window.DRUG_DB = { DRUGS, INTERACTIONS, ALLERGY_GROUPS, L };
 })();

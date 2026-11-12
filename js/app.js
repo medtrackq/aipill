@@ -6,7 +6,7 @@
 (function () {
   'use strict';
 
-  const { DRUGS, INTERACTIONS } = window.DRUG_DB;
+  const { DRUGS, INTERACTIONS, ALLERGY_GROUPS } = window.DRUG_DB;
   const SCRIPT_URL = (document.currentScript && document.currentScript.src) || location.href;
   const I18N = window.I18N;
 
@@ -65,6 +65,8 @@
     model: store.get('claudeModel', CONFIG.defaultModel),
     recent: arrayOf(store.get('recent', []), (x) => typeof x === 'string'),
     ixList: arrayOf(store.get('ixList', []), (x) => x && typeof x.name === 'string'),
+    allergies: arrayOf(store.get('allergies', []), (x) => x && typeof x.name === 'string'),
+    allergyNone: store.get('allergyNone', false) === true,
     ixResult: null,
     ixAi: null,
     analysis: null,       // last AI analysis {ai, demo, photo, mode, dbId}
@@ -172,7 +174,8 @@
     home: '<path d="m3 10.5 9-7 9 7"/><path d="M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5"/>',
     gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/>',
     lifebuoy: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><path d="m4.93 4.93 4.24 4.24"/><path d="m14.83 9.17 4.24-4.24"/><path d="m14.83 14.83 4.24 4.24"/><path d="m9.17 14.83-4.24 4.24"/>',
-    chevron: '<path d="m9 18 6-6-6-6"/>'
+    chevron: '<path d="m9 18 6-6-6-6"/>',
+    allergy: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v4"/><path d="M12 16h.01"/>'
   };
   function icon(name, size = 24) {
     return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${ICON_PATHS[name] || ''}</svg>`;
@@ -359,6 +362,115 @@
   }
 
   // ------------------------------------------------------------------
+  // Drug allergies
+  // Each recorded allergy is resolved to a database drug and/or drug
+  // classes (ALLERGY_GROUPS). A medicine conflicts when it is the same
+  // active ingredient (exact), shares a class (group) or belongs to a class
+  // with known cross-allergy (cross, shown in orange).
+  // ------------------------------------------------------------------
+  const termOf = (x) => ({ term: x, n: norm(x), words: normWords(x) });
+  const GROUP_INDEX = ALLERGY_GROUPS.map((g) => ({
+    group: g,
+    terms: [...g.terms, g.name.th, g.name.en, g.name.zh].map(termOf).filter((x) => x.n)
+  }));
+  const groupById = (id) => ALLERGY_GROUPS.find((g) => g.id === id) || null;
+
+  // what a typed name refers to: a database drug and/or drug classes
+  function profileOfName(name) {
+    const stripped = stripStrength(name);
+    const n = norm(stripped);
+    const words = normWords(stripped);
+    const drug = n ? exactDrug(searchDrugs(name).matches) : null;
+    const groups = new Set(drug ? drug.allergyGroups || [] : []);
+    if (n) {
+      for (const { group, terms } of GROUP_INDEX) {
+        if (terms.some((x) => x.n === n || hasWord(words, x))) groups.add(group.id);
+      }
+    }
+    return { drug, groups: [...groups], n };
+  }
+  function profileOfDrug(d) {
+    return { drug: d, groups: d.allergyGroups || [], n: norm(d.generic.en) };
+  }
+  function profileOfAllergy(a) {
+    const p = profileOfName(a.name);
+    if (!p.drug && a.drugId && drugById(a.drugId)) {
+      p.drug = drugById(a.drugId);
+      (p.drug.allergyGroups || []).forEach((g) => { if (!p.groups.includes(g)) p.groups.push(g); });
+    }
+    if (a.groupId && groupById(a.groupId) && !p.groups.includes(a.groupId)) p.groups.push(a.groupId);
+    return p;
+  }
+  // profile of a medicine the AI named (it may not be in the database)
+  function profileOfAiNames(names) {
+    const out = { drug: null, groups: [], n: '' };
+    names.filter(Boolean).forEach((x) => {
+      const p = profileOfName(x);
+      if (!out.drug && p.drug) out.drug = p.drug;
+      p.groups.forEach((g) => { if (!out.groups.includes(g)) out.groups.push(g); });
+    });
+    return out;
+  }
+
+  // compare one medicine with every recorded allergy, most serious first
+  function allergyConflicts(target, names = []) {
+    const keys = names.filter(Boolean).map((x) => norm(stripStrength(x))).filter(Boolean);
+    const out = [];
+    for (const a of state.allergies) {
+      const p = profileOfAllergy(a);
+      if (p.drug && target.drug && p.drug.ingredient === target.drug.ingredient) { out.push({ level: 'exact', allergy: a }); continue; }
+      const shared = p.groups.find((g) => target.groups.includes(g));
+      if (shared) { out.push({ level: 'group', allergy: a, group: groupById(shared) }); continue; }
+      // an allergy that matches nothing in the database is compared by name
+      if (!p.drug && !p.groups.length && p.n && keys.some((k) => k === p.n || (p.n.length >= 4 && k.includes(p.n)))) {
+        out.push({ level: 'exact', allergy: a }); continue;
+      }
+      const cross = p.groups.flatMap((g) => (groupById(g) || {}).cross || []).find((g) => target.groups.includes(g));
+      if (cross) out.push({ level: 'cross', allergy: a, group: groupById(cross) });
+    }
+    const rank = { exact: 0, group: 1, cross: 2 };
+    return out.sort((x, y) => rank[x.level] - rank[y.level]);
+  }
+  const drugConflicts = (d) => allergyConflicts(profileOfDrug(d), [d.generic.en]);
+
+  function conflictText(c) {
+    const a = c.allergy.name;
+    const g = c.group ? tr(c.group.name) : '';
+    if (c.level === 'exact') return { title: t('conflictExact'), sub: t('conflictExactSub', { a }) };
+    // when the allergy is the group itself, naming it twice adds nothing
+    if (c.level === 'group') return { title: t('conflictGroup', { g }), sub: c.group && norm(a) === norm(g) ? '' : t('conflictGroupSub', { a }) };
+    return { title: t('conflictCross', { a, g }), sub: '' };
+  }
+  // red (or orange for cross-allergy) banners shown above everything else
+  function allergyBanners(conflicts, aiWarning) {
+    const parts = conflicts.slice(0, 3).map((c) => {
+      const x = conflictText(c);
+      const kind = c.level === 'cross' ? 'warn' : 'danger';
+      return `<div class="banner banner-${kind} banner-allergy" role="alert"><span class="ico">${icon('allergy')}</span><div>${esc(x.title)}${x.sub ? `<small>${esc(x.sub)}</small>` : ''}</div></div>`;
+    });
+    if (!conflicts.length && aiWarning) {
+      parts.push(`<div class="banner banner-danger banner-allergy" role="alert"><span class="ico">${icon('allergy')}</span><div>${esc(t('conflictAi', { w: aiWarning }))}</div></div>`);
+    }
+    if (!parts.length) return '';
+    return parts.join('') + `<p style="margin:-.4rem 0 1rem"><a href="#/allergies">${esc(t('editAllergies'))}</a></p>`;
+  }
+
+  function saveAllergies() {
+    store.set('allergies', state.allergies);
+    store.set('allergyNone', state.allergyNone);
+  }
+  function addAllergy(item) {
+    const name = String(item.name || '').trim().slice(0, 120);
+    if (!name) return false;
+    if (state.allergies.some((x) => norm(x.name) === norm(name))) { toast(t('ixAlready')); return false; }
+    state.allergies.push({ name, drugId: item.drugId || null, groupId: item.groupId || null });
+    state.allergyNone = false;
+    saveAllergies();
+    toast(t('allergyAdded'));
+    return true;
+  }
+
+  // ------------------------------------------------------------------
   // Expiry dates (supports Buddhist Era years, e.g. 2570 = 2027)
   // ------------------------------------------------------------------
   function parseExpiry(s) {
@@ -453,7 +565,8 @@
     side_effects: strList('common side effects'),
     pill_count: { anyOf: [{ type: 'integer' }, { type: 'null' }], description: 'pills or capsules clearly visible, null if not countable' },
     expiry_date: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'expiry as YYYY-MM-DD or YYYY-MM (Gregorian), null if not visible' },
-    confidence: { type: 'integer', description: 'certainty of the identification, 0 to 100' }
+    confidence: { type: 'integer', description: 'certainty of the identification, 0 to 100' },
+    allergy_warning: str('warning if this medicine may trigger one of the user\'s recorded drug allergies, "" if none')
   };
   const MEDICINE_SCHEMA = {
     type: 'object',
@@ -497,6 +610,9 @@ For a photo:
 Identify the medicine. Never claim high confidence from colour or shape alone: different medicines can look identical. Lower confidence whenever the identity is uncertain.
 Set db_id only when the medicine is exactly one of these database entries (same active ingredient), otherwise null:
 ${catalogForPrompt()}
+
+The user's recorded drug allergies: ${state.allergies.length ? JSON.stringify(state.allergies.map((a) => String(a.name).slice(0, 80))) : 'none'}.
+Set allergy_warning when the medicine is one of these, contains one of them, belongs to the same drug class, or belongs to a class with known cross-allergy; say which allergy and that the user must not take it before asking a doctor or pharmacist. Otherwise use "".
 
 Write every human-readable value in ${aiLanguageName()}, in short simple sentences suitable for elderly readers. Use "" or [] when something is unknown.`;
   }
@@ -643,7 +759,8 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
       side_effects: arr(raw.side_effects),
       pill_count: count,
       expiry_date: s(raw.expiry_date) || null,
-      confidence: conf
+      confidence: conf,
+      allergy_warning: s(raw.allergy_warning).slice(0, 400)
     };
   }
 
@@ -944,6 +1061,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
       switch (r.name) {
         case 'search': title = renderSearch(r.params.get('q') || ''); break;
         case 'interactions': title = renderInteractions(); break;
+        case 'allergies': title = renderAllergies(); break;
         case 'drug': title = renderDrugRoute(r.arg); break;
         case 'result': title = renderResult(); break;
         case 'notfound': title = renderNotFound(); break;
@@ -1046,6 +1164,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
           <button type="button" class="btn btn-glass" data-action="photo" data-gallery="1">${icon('image')}<span>${esc(t('fromGallery'))}</span></button>
         </div>
       </section>
+      ${allergyCard()}
       ${demoNotice()}
       <div class="quick-grid">
         <a class="quick" href="#/interactions">
@@ -1074,9 +1193,11 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     const look = (d.looks || [])[0];
     const title = `${opts.prefix ? opts.prefix + ': ' : ''}${tr(d.generic)} ${d.strength}`;
     const sub = opts.sub || (d.brands || []).filter(isLatin).join(', ');
+    const c = drugConflicts(d)[0];
+    const flag = c ? ` <span class="badge badge-${c.level === 'cross' ? 'warn' : 'danger'}">${icon('allergy', 16)}${esc(t('allergyBadge'))}</span>` : '';
     return `<a class="result-item" href="#/drug/${d.id}">
       <span class="ri-pill">${look ? pillSvg(look) : icon('pill')}</span>
-      <span class="ri-main"><span class="ri-title">${esc(title)}</span>
+      <span class="ri-main"><span class="ri-title">${esc(title)}${flag}</span>
       <span class="ri-sub">${esc(sub)}</span></span>
       <span class="chev" aria-hidden="true">${icon('chevron')}</span>
     </a>`;
@@ -1136,6 +1257,112 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
         ${fallbackActions({ photo: true, photoLabel: t('photoInstead'), typeName: false })}
       </div></section>`;
     box.innerHTML = html;
+  }
+
+  // ----- allergies -----
+  function allergyCard() {
+    const list = state.allergies;
+    const asking = !list.length && !state.allergyNone;
+    let body;
+    if (list.length) {
+      body = `<div class="chips">${list.map((a) => `<span class="chip chip-danger">${esc(a.name)}</span>`).join('')}</div>`;
+    } else if (state.allergyNone) {
+      body = `<p>${esc(t('allergyNoneSet'))}</p>`;
+    } else {
+      body = `<p>${esc(t('allergyAsk'))}</p>`;
+    }
+    const actions = asking
+      ? `<div class="btn-row"><a class="btn btn-primary btn-sm" href="#/allergies">${icon('plus')}<span>${esc(t('allergyAdd'))}</span></a>
+          <button type="button" class="btn btn-secondary btn-sm" data-action="al-none">${esc(t('allergyNoneBtn'))}</button></div>`
+      : `<a class="btn btn-secondary btn-sm" href="#/allergies">${esc(t('allergyEdit'))}</a>`;
+    return `<section class="allergy-card${asking ? ' asking' : ''}" aria-labelledby="al-h">
+      <div class="allergy-head"><span class="tile tile-danger">${icon('allergy')}</span><h2 id="al-h">${esc(t('allergyTitle'))}</h2></div>
+      ${body}
+      <div class="allergy-actions">${actions}</div>
+    </section>`;
+  }
+
+  function renderAllergies() {
+    app.innerHTML = `
+      ${screenHead(t('allergyTitle'))}
+      <p class="muted" style="margin-top:-.25rem">${esc(t('allergyIntro'))}</p>
+      <form id="al-form" class="searchbar" autocomplete="off">
+        ${icon('allergy')}
+        <label class="sr-only" for="al-input">${esc(t('allergyPh'))}</label>
+        <input id="al-input" type="text" enterkeyhint="done" placeholder="${esc(t('allergyPh'))}" data-autofocus>
+        <button type="button" class="round-btn btn-mic" data-action="voice" data-target="al-input" aria-pressed="false" aria-label="${esc(t('voiceBtn'))}">${icon('mic')}</button>
+        <button type="submit" class="round-btn primary" aria-label="${esc(t('allergyAdd'))}">${icon('plus')}</button>
+      </form>
+      <div id="al-suggest" aria-live="polite" style="margin:-.25rem 0 1rem"></div>
+      <h2 class="section-label">${esc(t('allergyCommon'))}</h2>
+      <div class="chips" style="margin-bottom:1.25rem">${ALLERGY_GROUPS.map((g) => `<button type="button" class="chip" data-action="al-add-group" data-id="${g.id}">${icon('plus', 18)}${esc(tr(g.name))}</button>`).join('')}</div>
+      <section class="card">
+        <div class="card-title"><h2 id="al-list-h"></h2></div>
+        <div id="al-list" aria-live="polite"></div>
+      </section>
+      <p class="help" style="display:flex;gap:.4rem;align-items:flex-start">${icon('shield', 18)}<span>${esc(t('allergyPrivacy'))}</span></p>`;
+    const input = $('#al-input');
+    input.addEventListener('input', () => renderAllergySuggest(input.value, false));
+    $('#al-form').addEventListener('submit', (e) => { e.preventDefault(); submitAllergy(input.value); });
+    renderAllergyList();
+    return t('allergyTitle');
+  }
+
+  // exact drug or class name → add; otherwise offer suggestions / "add as typed"
+  function submitAllergy(value) {
+    const q = String(value || '').trim();
+    if (!q) return;
+    const p = profileOfName(q);
+    if (p.drug || p.groups.length) {
+      if (addAllergy({ name: q, drugId: p.drug ? p.drug.id : null })) clearAllergyInput();
+      return;
+    }
+    renderAllergySuggest(q, true);
+  }
+  function clearAllergyInput() {
+    const input = $('#al-input');
+    if (input) { input.value = ''; input.focus(); }
+    const box = $('#al-suggest');
+    if (box) box.innerHTML = '';
+    renderAllergyList();
+  }
+  function renderAllergySuggest(value, submitted) {
+    const box = $('#al-suggest');
+    if (!box) return;
+    const q = String(value || '').trim();
+    if (!q) { box.innerHTML = ''; return; }
+    const nq = norm(q);
+    const { matches, suggestions } = searchDrugs(q);
+    const drugs = (matches.length ? matches.slice(0, 4) : suggestions).map((m) => m.drug);
+    const groups = GROUP_INDEX.filter(({ terms }) => nq.length >= 2 && terms.some((x) => x.n.includes(nq))).map((x) => x.group).slice(0, 3);
+    let html = '';
+    if (drugs.length || groups.length) {
+      html += `<p class="field-label" style="margin:0 0 .4rem">${esc(matches.length || groups.length ? t('resultsCount', { n: drugs.length + groups.length }) : t('didYouMean'))}</p>
+        <div class="chips">${groups.map((g) => `<button type="button" class="chip" data-action="al-add-group" data-id="${g.id}">${icon('plus', 18)}${esc(tr(g.name))}</button>`).join('')}${drugs.map((d) => `<button type="button" class="chip" data-action="al-pick" data-id="${d.id}">${icon('plus', 18)}${esc(tr(d.generic))}</button>`).join('')}</div>`;
+    }
+    if (submitted || (!drugs.length && !groups.length && q.length >= 3)) {
+      html += `<div class="chips" style="margin-top:.5rem"><button type="button" class="chip" data-action="al-add-typed" data-q="${esc(q)}">${esc(t('ixAddAsTyped', { q }))}</button></div>`;
+    }
+    box.innerHTML = html;
+  }
+  function renderAllergyList() {
+    const h = $('#al-list-h'), box = $('#al-list');
+    if (!h || !box) return;
+    h.textContent = t('allergyListTitle', { n: state.allergies.length });
+    if (!state.allergies.length) {
+      box.innerHTML = state.allergyNone
+        ? `<div class="banner banner-safe" style="margin:0"><span class="ico">${icon('check')}</span><div>${esc(t('allergyNoneSet'))}</div></div>`
+        : `<p class="muted">${esc(t('allergyEmpty'))}</p>
+           <button type="button" class="btn btn-secondary btn-block" data-action="al-none">${esc(t('allergyNoneBtn'))}</button>`;
+      return;
+    }
+    box.innerHTML = `<ul class="ix-list">${state.allergies.map((a, i) => {
+      const p = profileOfAllergy(a);
+      const sub = [p.drug ? `${tr(p.drug.generic)}` : '', ...p.groups.map((g) => t('allergyGroupLbl', { g: tr(groupById(g).name) }))].filter(Boolean).join(' · ') || t('allergyUnknownLbl');
+      return `<li><span class="tile tile-danger" style="width:2.6rem;height:2.6rem">${icon('allergy')}</span>
+        <span class="ix-name">${esc(a.name)}<small>${esc(sub)}</small></span>
+        <button type="button" class="ix-remove" data-action="al-remove" data-index="${i}" aria-label="${esc(t('ixRemove', { name: a.name }))}">✕</button></li>`;
+    }).join('')}</ul>`;
   }
 
   // ----- drug detail -----
@@ -1239,6 +1466,10 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     // demo data has a made-up expiry date: never judge it as (not) expired
     const exp = ai && ai.expiry_date && !vm.demo ? parseExpiry(ai.expiry_date) : null;
     const inList = state.ixList.some((x) => (vm.kind === 'db' ? x.id === vm.drug.id : x.name === v.generic));
+    const conflicts = vm.kind === 'db'
+      ? drugConflicts(vm.drug)
+      : allergyConflicts(profileOfAiNames([ai.generic_name, ai.brand_name]), [ai.generic_name, ai.brand_name]);
+    const aiAllergy = ai && !vm.demo ? ai.allergy_warning : '';
 
     // Trust banner. Green is used only when a real AI analysis was confident
     // and its answer matched the database; demo data and low-confidence
@@ -1265,6 +1496,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
       : `<span class="muted" style="padding:.5rem;text-align:center">${esc(t('noPhotoYet'))}</span>`;
 
     const badges = [
+      conflicts.length || aiAllergy ? `<span class="badge badge-${conflicts.length && conflicts[0].level === 'cross' ? 'warn' : 'danger'}">${icon('allergy', 18)}${esc(t('allergyBadge'))}</span>` : '',
       vm.demo ? `<span class="badge badge-warn">${icon('warn', 18)}${esc(t('demoShort'))}</span>`
         : identityCertain ? `<span class="badge badge-safe">${icon('shield', 18)}${esc(t('verified'))}</span>`
           : `<span class="badge badge-warn">${icon('sparkle', 18)}AI</span>`,
@@ -1294,6 +1526,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
       <div class="screen-head">
         <button type="button" class="btn-back" data-action="back">${icon('arrowLeft')}<span>${esc(t('back'))}</span></button>
       </div>
+      ${allergyBanners(conflicts, aiAllergy)}
       ${exp && expiryStatus(exp) !== 'ok' ? expiryBanner(exp) : ''}
       ${v.highAlert ? `<div class="banner banner-danger" role="alert"><span class="ico">${icon('danger')}</span><div>${esc(t('highAlert'))}</div></div>` : ''}
       ${trust}
@@ -1362,7 +1595,8 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
 
     // wire up the screen
     const readBtn = $('[data-action="read-aloud"]', app);
-    readBtn.addEventListener('click', () => readAloud(speechText(v, vm), readBtn));
+    const spokenAllergy = conflicts.length ? conflicts.map((c) => conflictText(c).title).join('. ') : aiAllergy ? t('conflictAi', { w: aiAllergy }) : '';
+    readBtn.addEventListener('click', () => readAloud([spokenAllergy, speechText(v, vm)].filter(Boolean).join('. '), readBtn));
     $('[data-action="add-ix"]', app).addEventListener('click', (e) => {
       addToIxList(vm.kind === 'db' ? { name: tr(vm.drug.generic), id: vm.drug.id } : { name: v.generic, id: null });
       e.currentTarget.disabled = true;
@@ -1506,6 +1740,16 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     const r = state.ixResult;
     if (!r) { box.innerHTML = ''; return; }
     let html = `<section class="card"><h2>${esc(t('ixResultTitle'))}</h2>`;
+    const allergyHits = state.ixList.map((x) => {
+      const d = x.id ? drugById(x.id) : null;
+      const c = (d ? allergyConflicts(profileOfDrug(d), [x.name]) : allergyConflicts(profileOfName(x.name), [x.name]))[0];
+      return c ? { item: x, c } : null;
+    }).filter(Boolean);
+    html += allergyHits.map(({ item, c }) => {
+      const li = levelInfo(c.level === 'cross' ? 'moderate' : 'major');
+      return `<div class="ix-result ${li.cls}"><h3>${icon('allergy', 24)}<span>${esc(t('allergyBadge'))}</span></h3>
+        <p style="font-weight:700;margin-bottom:.25rem">${esc(t('ixAllergy', { d: item.name, a: c.allergy.name }))}</p><p>${esc(conflictText(c).title)}</p></div>`;
+    }).join('');
     if (r.results.length) {
       html += r.results.map((x) => {
         const li = levelInfo(x.level);
@@ -1515,7 +1759,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
         return `<div class="ix-result ${li.cls}"><h3>${icon(li.icon, 24)}<span>${esc(li.label)}</span></h3>
           <p style="font-weight:700;margin-bottom:.25rem">${esc(x.a.name)} + ${esc(x.b.name)}</p><p>${esc(body)}</p></div>`;
       }).join('');
-    } else if (!r.unknown.length) {
+    } else if (!r.unknown.length && !allergyHits.length) {
       html += `<div class="ix-result ix-none"><h3>${icon('check', 24)}<span>${esc(t('ixNone'))}</span></h3><p>${esc(t('ixNoneSub'))}</p></div>`;
     }
     if (r.unknown.length) {
@@ -1684,6 +1928,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
         startVoice(el, (text) => {
           if (input) input.value = text;
           if (el.dataset.target === 'search-input') submitSearch(text);
+          else if (el.dataset.target === 'al-input') submitAllergy(text);
           else submitIx(text);
         });
         break;
@@ -1714,6 +1959,31 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
         $('#ix-results').scrollIntoView({ block: 'start' });
         break;
       case 'ix-ai': runIxAi(); break;
+      case 'al-add-group': {
+        const g = groupById(el.dataset.id);
+        if (g && addAllergy({ name: tr(g.name), groupId: g.id })) clearAllergyInput();
+        break;
+      }
+      case 'al-pick': {
+        const d = drugById(el.dataset.id);
+        if (d && addAllergy({ name: tr(d.generic), drugId: d.id })) clearAllergyInput();
+        break;
+      }
+      case 'al-add-typed':
+        if (addAllergy({ name: el.dataset.q })) clearAllergyInput();
+        break;
+      case 'al-remove':
+        state.allergies.splice(Number(el.dataset.index), 1);
+        saveAllergies();
+        renderAllergyList();
+        break;
+      case 'al-none':
+        state.allergies = [];
+        state.allergyNone = true;
+        saveAllergies();
+        toast(t('saved'));
+        if ($('#al-list')) renderAllergyList(); else render(false);
+        break;
       default: break;
     }
   });
@@ -1738,5 +2008,5 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   render(false);
 
   // exposed for tests / debugging
-  window.AIPill = { searchDrugs, checkInteractions, parseExpiry, state, CONFIG };
+  window.AIPill = { searchDrugs, checkInteractions, parseExpiry, allergyConflicts, profileOfName, profileOfDrug, state, CONFIG };
 })();

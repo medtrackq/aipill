@@ -278,6 +278,22 @@ main.container { outline: none; min-height: 60vh; padding-bottom: 1rem; }
 .sos p { margin: .1rem 0 .7rem; font-size: .93rem; color: var(--muted); }
 .sos .btn-row .btn { flex: 1 1 8rem; }
 
+/* drug allergy card (home) */
+.allergy-card {
+  padding: 1rem 1.1rem; border-radius: var(--radius); margin-bottom: 1rem;
+  background: var(--surface); border: 1px solid var(--line-soft); box-shadow: var(--shadow);
+}
+.allergy-card.asking { background: var(--danger-bg); border-color: var(--danger-line); }
+:root[data-contrast="high"] .allergy-card { border: 2px solid var(--danger); }
+.allergy-head { display: flex; align-items: center; gap: .7rem; margin-bottom: .5rem; }
+.allergy-head h2 { margin: 0; font-size: 1.12rem; }
+.allergy-card p { margin: 0 0 .75rem; }
+.allergy-card .chips { margin-bottom: .75rem; }
+.allergy-actions .btn-row .btn { flex: 1 1 9rem; }
+.chip-danger { background: var(--danger-bg); color: var(--danger); border-color: var(--danger-line); cursor: default; padding: .3rem .95rem; }
+.banner-allergy { border-width: 2px; font-size: 1.05rem; }
+:root[data-contrast="high"] .banner-allergy { border-width: 4px; }
+
 .pill-notice {
   display: flex; align-items: center; gap: .6rem; justify-content: space-between;
   padding: .5rem .5rem .5rem 1rem; margin-bottom: 1rem; border-radius: var(--radius);

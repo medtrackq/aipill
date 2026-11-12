@@ -7,14 +7,19 @@
   'use strict';
 
   const { DRUGS, INTERACTIONS } = window.DRUG_DB;
+  const SCRIPT_URL = (document.currentScript && document.currentScript.src) || location.href;
   const I18N = window.I18N;
 
   // ------------------------------------------------------------------
   // Configuration
   // ------------------------------------------------------------------
   const CONFIG = {
-    defaultModel: 'gemini-3.8-flash',
-    apiBase: 'https://generativelanguage.googleapis.com/v1beta/models/',
+    // Claude model and effort. Opus 5.5 reads labels most accurately; "low"
+    // effort keeps answers fast (raise to "medium" for harder photos).
+    defaultModel: 'claude-opus-5-5',
+    effort: 'low',
+    // vendored official SDK, resolved relative to this script
+    sdkUrl: new URL('../vendor/anthropic-sdk-1.3.0.min.mjs', SCRIPT_URL).href,
     fdaUrl: 'https://www.fda.moph.go.th/',
     fdaHost: 'fda.moph.go.th',
     emergencyTel: '1669',
@@ -26,7 +31,7 @@
     zxingIntegrity: 'sha384-BzBxP10ZE72aitqj5UMmUsbKFliP/DZqA8Wq+BNNhlIJDGoEd1tpkMYXOg9+n6sB',
     maxImageSide: 1600,
     lowConfidence: 60,
-    aiTimeoutMs: 45000
+    aiTimeoutMs: 60000
   };
   // Text sizes as a multiple of the browser's own default font size, so a user
   // who already enlarged text in their browser keeps that enlargement
@@ -60,8 +65,8 @@
     lang: store.get('lang', detectLang()),
     fontIdx: Math.min(FONT_SCALES.length - 1, Math.max(0, Math.round(Number(store.get('fontIdx', 0))) || 0)),
     contrast: store.get('contrast', prefersHighContrast() ? 'high' : 'normal'),
-    apiKey: store.get('apiKey', ''),
-    model: store.get('model', CONFIG.defaultModel),
+    apiKey: store.get('anthropicKey', ''),
+    model: store.get('claudeModel', CONFIG.defaultModel),
     recent: arrayOf(store.get('recent', []), (x) => typeof x === 'string'),
     ixList: arrayOf(store.get('ixList', []), (x) => x && typeof x.name === 'string'),
     ixResult: null,
@@ -74,6 +79,9 @@
     pendingPhoto: null
   };
   if (!I18N[state.lang]) state.lang = 'th';
+  // keys saved by the earlier Gemini version cannot be used with Claude
+  store.del('apiKey');
+  store.del('model');
 
   // ------------------------------------------------------------------
   // Helpers
@@ -121,12 +129,24 @@
     el.textContent = '';
     setTimeout(() => { el.textContent = msg; }, 50);
   }
+  let overlayTimer = null;
   function showOverlay(title, sub) {
     $('#overlay-title').textContent = title;
     $('#overlay-sub').textContent = sub || '';
+    $('#overlay-elapsed').textContent = '';
     $('#overlay').hidden = false;
+    const started = Date.now();
+    clearInterval(overlayTimer);
+    // elapsed time is visual only (aria-hidden) so screen readers are not
+    // interrupted every second by the live region
+    overlayTimer = setInterval(() => {
+      $('#overlay-elapsed').textContent = t('elapsed', { n: Math.round((Date.now() - started) / 1000) });
+    }, 1000);
   }
-  function hideOverlay() { $('#overlay').hidden = true; }
+  function hideOverlay() {
+    clearInterval(overlayTimer);
+    $('#overlay').hidden = true;
+  }
 
   // ------------------------------------------------------------------
   // Icons (inline SVG, decorative)
@@ -461,7 +481,7 @@
   }
 
   // ------------------------------------------------------------------
-  // Gemini API
+  // Claude API (official Anthropic SDK, loaded only when AI is first used)
   // ------------------------------------------------------------------
   function aiLanguageName() { return t('aiLanguage'); }
 
@@ -469,66 +489,82 @@
     return DRUGS.map((d) => `- ${d.id}: ${d.generic.en} ${d.strength} (brands: ${(d.brands || []).filter(isLatin).join(', ') || '-'})`).join('\n');
   }
 
-  const AI_JSON_SHAPE = `{
-  "is_medicine": boolean,
-  "image_problem": "none" | "blurry" | "too_dark" | "glare" | "too_far" | "not_medicine",
-  "db_id": string or null,
-  "generic_name": string,
-  "brand_name": string,
-  "strength": string,
-  "appearance": string,
-  "label_text": string,
-  "indications": string,
-  "usage": string,
-  "cautions": string[],
-  "dangers": string[],
-  "side_effects": string[],
-  "pill_count": integer or null,
-  "expiry_date": "YYYY-MM-DD" or "YYYY-MM" or null,
-  "confidence": integer from 0 to 100
-}`;
+  // Structured output: the API guarantees the reply matches this schema.
+  const str = (description) => ({ type: 'string', description });
+  const strList = (description) => ({ type: 'array', items: { type: 'string' }, description });
+  const MEDICINE_FIELDS = {
+    is_medicine: { type: 'boolean', description: 'false when no medicine is shown or named' },
+    image_problem: { type: 'string', enum: ['none', 'blurry', 'too_dark', 'glare', 'too_far', 'not_medicine'], description: 'why the photo is unusable, or "none"' },
+    db_id: { anyOf: [{ type: 'string', enum: DRUGS.map((d) => d.id) }, { type: 'null' }], description: 'matching database entry, or null' },
+    generic_name: str('generic (active ingredient) name, "" if unknown'),
+    brand_name: str('brand / trade name, "" if unknown'),
+    strength: str('strength such as "500 mg", "" if unknown'),
+    appearance: str('physical appearance'),
+    label_text: str('all text read from the label, bag, foil or imprint'),
+    indications: str('what it is used for'),
+    usage: str('how to take it: label directions when visible, else the standard adult dose'),
+    cautions: strList('things to be careful about (food, milk, alcohol, drowsiness, timing)'),
+    dangers: strList('contraindications and serious risks'),
+    side_effects: strList('common side effects'),
+    pill_count: { anyOf: [{ type: 'integer' }, { type: 'null' }], description: 'pills or capsules clearly visible, null if not countable' },
+    expiry_date: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'expiry as YYYY-MM-DD or YYYY-MM (Gregorian), null if not visible' },
+    confidence: { type: 'integer', description: 'certainty of the identification, 0 to 100' }
+  };
+  const MEDICINE_SCHEMA = {
+    type: 'object',
+    properties: MEDICINE_FIELDS,
+    required: Object.keys(MEDICINE_FIELDS),
+    additionalProperties: false
+  };
+  const INTERACTION_SCHEMA = {
+    type: 'object',
+    properties: {
+      interactions: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            drugs: { type: 'array', items: { type: 'string' } },
+            level: { type: 'string', enum: ['major', 'moderate', 'minor'] },
+            explanation: { type: 'string' }
+          },
+          required: ['drugs', 'level', 'explanation'],
+          additionalProperties: false
+        }
+      },
+      note: { type: 'string' }
+    },
+    required: ['interactions', 'note'],
+    additionalProperties: false
+  };
 
-  function imagePrompt(mode) {
-    const focus = mode === 'package'
-      ? 'The user says this is a package, bottle, box or label: read every printed word, the dosing directions and the expiry date.'
-      : 'The user says this is a pill: look closely at the shape, colour, score line, imprint/markings and any packaging text.';
-    return `You are a careful clinical pharmacist assistant helping people in Thailand (many are elderly) identify a medicine from a photo.
-The photo may show loose pills, a blister pack, a bottle, a box, or a hospital/clinic medicine bag (often a clear zip-lock bag with a printed label). ${focus}
+  function medicineSystemPrompt() {
+    return `You are a careful clinical pharmacist assistant helping people in Thailand (many are elderly) check their medicines.
+The input may be a photo of loose pills, a blister pack, a bottle, a box, or a hospital/clinic medicine bag (often a clear zip-lock bag with a printed label), or a medicine name the user typed.
 
-Tasks:
-1. Read ALL visible text (label, bag, blister foil, imprint), including text seen through clear plastic. Put it in "label_text".
-2. Describe the physical appearance in "appearance".
-3. Count the pills or capsules that are clearly visible. Use null if counting is not possible.
-4. Find the expiry date (EXP / วันหมดอายุ / ใช้ก่อน). Thai labels may use Buddhist Era years (2570 = 2027): convert to Gregorian. Use null if not visible.
-5. Identify the medicine. Never claim high confidence from colour or shape alone – different medicines can look identical. Lower "confidence" whenever the identity is uncertain.
-6. If it is one of these database entries, put its id in "db_id", otherwise null:
+For a photo:
+1. Read ALL visible text (label, bag, blister foil, imprint), including text seen through clear plastic, into label_text.
+2. Describe the physical appearance.
+3. Count the pills or capsules that are clearly visible; null if counting is not possible.
+4. Find the expiry date (EXP / วันหมดอายุ / ใช้ก่อน). Thai labels may use Buddhist Era years (2570 = 2027): convert to Gregorian. null if not visible.
+5. If the photo is unusable, set image_problem. If there is no medicine, set is_medicine to false.
+
+Identify the medicine. Never claim high confidence from colour or shape alone: different medicines can look identical. Lower confidence whenever the identity is uncertain.
+Set db_id only when the medicine is exactly one of these database entries (same active ingredient), otherwise null:
 ${catalogForPrompt()}
-7. If the photo is unusable, set "image_problem" accordingly. If there is no medicine, set "is_medicine" to false.
 
-Write every human-readable value in ${aiLanguageName()}, in short simple sentences suitable for elderly readers.
-"usage" must follow the label or bag directions when they are visible; otherwise give the standard adult dose.
-"dangers" = contraindications and serious risks. "cautions" = things to be careful about (food, milk, alcohol, drowsiness, timing). Use "" or [] when unknown.
-Respond with ONLY a JSON object with exactly these keys:
-${AI_JSON_SHAPE}`;
+Write every human-readable value in ${aiLanguageName()}, in short simple sentences suitable for elderly readers. Use "" or [] when something is unknown.`;
   }
-
-  function namePrompt(q) {
-    return `A user in Thailand searched a medicine database for ${JSON.stringify(String(q).slice(0, 200))} and it was not found.
-If this is a real medicine (or an obvious misspelling of one) available in Thailand, describe it. If you are not sure which medicine it is, set "is_medicine" to false and leave the other fields empty.
-If it is one of these database entries, put its id in "db_id", otherwise null:
-${catalogForPrompt()}
-Use "image_problem": "none", "label_text": "", "pill_count": null, "expiry_date": null.
-Write every human-readable value in ${aiLanguageName()}, in short simple sentences suitable for elderly readers.
-Respond with ONLY a JSON object with exactly these keys:
-${AI_JSON_SHAPE}`;
+  function photoInstruction(mode) {
+    return mode === 'package'
+      ? 'This is a package, bottle, box or label. Read every printed word, the dosing directions and the expiry date.'
+      : 'This is a pill. Look closely at the shape, colour, score line, imprint/markings and any packaging text.';
   }
-
-  function interactionPrompt(names) {
-    return `Check drug–drug interactions among these medicines taken by one patient in Thailand: ${JSON.stringify(names.map((n) => String(n).slice(0, 120)))}.
-Report only clinically meaningful interactions you are confident about, including duplicated active ingredients. Do not invent interactions.
-Write explanations in ${aiLanguageName()}, short and simple, and advise asking a doctor or pharmacist rather than stopping medicines.
-Respond with ONLY a JSON object:
-{"interactions": [{"drugs": [string, string], "level": "major" | "moderate" | "minor", "explanation": string}], "note": string}`;
+  function nameInstruction(q) {
+    return `I searched a medicine database for ${JSON.stringify(String(q).slice(0, 200))} and it was not found. If this is a real medicine (or an obvious misspelling of one) available in Thailand, describe it. If you are not sure which medicine it is, set is_medicine to false and leave the other fields empty. There is no photo: use image_problem "none", label_text "", pill_count null and expiry_date null.`;
+  }
+  function interactionSystemPrompt() {
+    return `You check drug–drug interactions for a patient in Thailand. Report only clinically meaningful interactions you are confident about, including duplicated active ingredients. Do not invent interactions. Write explanations in ${aiLanguageName()}, short and simple, and advise asking a doctor or pharmacist rather than stopping medicines.`;
   }
 
   function parseJsonLoose(text) {
@@ -536,7 +572,7 @@ Respond with ONLY a JSON object:
       const cleaned = text.replace(/```json|```/g, '').trim();
       const s = cleaned.indexOf('{'), en = cleaned.lastIndexOf('}');
       if (s >= 0 && en > s) return JSON.parse(cleaned.slice(s, en + 1));
-      throw new Error('Invalid AI response');
+      throw invalidAiError();
     }
   }
 
@@ -545,6 +581,8 @@ Respond with ONLY a JSON object:
   let aiJob = null;
   function beginAiJob() {
     cancelAiJob();
+    const stale = $('#ai-error'); // an earlier failure no longer applies
+    if (stale) stale.remove();
     const job = { controller: new AbortController(), timedOut: false };
     job.timer = setTimeout(() => { job.timedOut = true; job.controller.abort(); }, CONFIG.aiTimeoutMs);
     aiJob = job;
@@ -561,49 +599,61 @@ Respond with ONLY a JSON object:
     aiJob = null;
   }
 
-  async function geminiCall(parts, signal) {
-    const model = (state.model || CONFIG.defaultModel).trim();
-    const url = CONFIG.apiBase + encodeURIComponent(model) + ':generateContent';
-    const makeBody = (withThinking) => JSON.stringify({
-      contents: [{ role: 'user', parts }],
-      generationConfig: Object.assign(
-        { responseMimeType: 'application/json' },
-        withThinking ? { thinkingConfig: { thinkingLevel: 'low' } } : {}
-      )
-    });
-    const send = async (body) => {
-      try {
-        return await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': state.apiKey },
-          body,
-          signal
-        });
-      } catch (e) {
-        if (e && e.name === 'AbortError') throw e;
-        const err = new Error((e && e.message) || 'network');
-        err.network = true; // fetch itself failed: offline, DNS, CORS, proxy…
-        throw err;
-      }
-    };
-    let res = await send(makeBody(true));
-    if (res.status === 400) {
-      const txt = await res.clone().text();
-      if (/thinking/i.test(txt)) res = await send(makeBody(false)); // model without thinking levels
-    }
-    if (!res.ok) {
-      let msg = '';
-      try { const j = await res.json(); msg = (j.error && j.error.message) || ''; } catch (e) { /* ignore */ }
-      const err = new Error(msg || 'HTTP ' + res.status);
-      err.status = res.status; err.apiMessage = msg;
+  // The SDK is vendored (vendor/README.md) and imported on first use.
+  let sdkLoad = null;
+  async function loadSdk() {
+    if (!sdkLoad) sdkLoad = import(CONFIG.sdkUrl);
+    try {
+      return (await sdkLoad).default;
+    } catch (e) {
+      sdkLoad = null; // allow a retry, e.g. after the connection comes back
+      const err = new Error('could not load the AI library');
+      err.network = true;
       throw err;
     }
-    const data = await res.json();
-    if (data.promptFeedback && data.promptFeedback.blockReason) { const e = new Error('blocked'); e.blocked = true; throw e; }
-    const cand = data.candidates && data.candidates[0];
-    const text = ((cand && cand.content && cand.content.parts) || [])
-      .filter((p) => typeof p.text === 'string' && !p.thought).map((p) => p.text).join('');
-    if (!text) { const e = new Error('empty'); e.blocked = true; throw e; }
+  }
+
+  // Map SDK errors (typed classes, most specific first) onto what the UI says.
+  function classifySdkError(Anthropic, e) {
+    if (e instanceof Anthropic.APIUserAbortError) { const x = new Error('aborted'); x.name = 'AbortError'; return x; }
+    if (e instanceof Anthropic.APIConnectionTimeoutError) { const x = new Error('timeout'); x.name = 'AbortError'; x.timeout = true; return x; }
+    if (e instanceof Anthropic.AuthenticationError || e instanceof Anthropic.PermissionDeniedError) { e.keyProblem = true; return e; }
+    if (e instanceof Anthropic.RateLimitError || e instanceof Anthropic.InternalServerError) { e.busy = true; return e; } // 429, 5xx, 529 overloaded
+    if (e instanceof Anthropic.APIConnectionError) { e.network = true; return e; } // subclass of APIError: check first
+    return e;
+  }
+
+  // Server-side refusal fallback is supported on these models
+  const FALLBACK_MODELS = /^claude-(opus-5|fable-5|sonnet-5-5)/;
+
+  // One Claude request returning JSON that matches `schema`.
+  async function claudeJson({ system, content, schema }, signal) {
+    const Anthropic = await loadSdk();
+    const model = (state.model || CONFIG.defaultModel).trim();
+    const client = new Anthropic({
+      apiKey: state.apiKey,
+      dangerouslyAllowBrowser: true, // the user's own key, entered on this device (README: use a backend in production)
+      maxRetries: 1,
+      timeout: CONFIG.aiTimeoutMs
+    });
+    const params = {
+      model,
+      max_tokens: 16000,
+      system,
+      output_config: { effort: CONFIG.effort, format: { type: 'json_schema', schema } },
+      messages: [{ role: 'user', content }]
+    };
+    if (FALLBACK_MODELS.test(model)) Object.assign(params, { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' });
+    let response;
+    try {
+      response = await client.beta.messages.create(params, { signal });
+    } catch (e) {
+      throw classifySdkError(Anthropic, e);
+    }
+    if (response.stop_reason === 'refusal') { const e = new Error('refusal'); e.blocked = true; throw e; }
+    if (response.stop_reason === 'max_tokens') throw invalidAiError();
+    const text = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
+    if (!text) throw invalidAiError();
     return parseJsonLoose(text);
   }
 
@@ -657,8 +707,8 @@ Respond with ONLY a JSON object:
   function aiErrorMessage(err) {
     if (err && err.blocked) return t('errBlocked');
     if (err && err.network) return t('errNetwork');
-    if (err && (err.status === 401 || err.status === 403 || err.status === 429)) return t('errKey');
-    if (err && err.status === 400 && /api.?key/i.test(err.apiMessage || '')) return t('errKey');
+    if (err && err.keyProblem) return t('errKey');
+    if (err && err.busy) return t('errBusy');
     return t('errGeneric', { msg: (err && err.message) || '?' });
   }
 
@@ -700,14 +750,40 @@ Respond with ONLY a JSON object:
     return { fail: null, dbId };
   }
 
-  // shared error handling for AI jobs; returns nothing
-  function handleAiFailure(job, err) {
-    if (err && err.name === 'AbortError') {
-      if (job.timedOut) toast(t('errTimeout'));
-      return; // cancelled by the user or by navigation: stay quiet
-    }
-    console.error(err);
-    toast(aiErrorMessage(err));
+  // Shared error handling for AI jobs: the message stays on screen (a toast
+  // vanished before elderly users could read it) with a retry button.
+  function handleAiFailure(job, err, retry) {
+    const timedOut = job.timedOut || (err && err.timeout);
+    if (err && err.name === 'AbortError' && !timedOut) return; // cancelled by the user or by navigation
+    if (!timedOut) console.error(err);
+    showAiError(timedOut ? t('errTimeout') : aiErrorMessage(err), retry, { settings: !!(err && err.keyProblem) });
+  }
+
+  function showAiError(message, retry, { settings = false } = {}) {
+    const old = $('#ai-error');
+    if (old) old.remove();
+    const box = document.createElement('div');
+    box.id = 'ai-error';
+    box.className = 'banner banner-danger';
+    box.setAttribute('role', 'alert');
+    box.tabIndex = -1;
+    box.innerHTML = `<span class="ico">${icon('danger', 26)}</span><div style="flex:1">${esc(message)}
+      <div class="btn-row" style="margin-top:.75rem">
+        ${retry ? `<button type="button" class="btn btn-primary" data-ai-error="retry">${esc(t('retryAi'))}</button>` : ''}
+        ${settings ? `<button type="button" class="btn btn-secondary" data-ai-error="settings">${esc(t('demoSetup'))}</button>` : ''}
+        <button type="button" class="btn btn-ghost" data-ai-error="close">${esc(t('close'))}</button>
+      </div></div>`;
+    box.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-ai-error]');
+      if (!b) return;
+      box.remove();
+      if (b.dataset.aiError === 'retry') retry();
+      else if (b.dataset.aiError === 'settings') openSettings();
+    });
+    const head = $('.screen-head', app);
+    if (head) head.after(box); else app.prepend(box);
+    box.scrollIntoView({ block: 'center' });
+    box.focus({ preventScroll: true });
   }
 
   async function analyzePhoto(img, mode) {
@@ -721,10 +797,14 @@ Respond with ONLY a JSON object:
         ai = demoAnalysis(mode);
         demo = true;
       } else {
-        ai = cleanAi(await geminiCall([
-          { text: imagePrompt(mode) },
-          { inlineData: { mimeType: img.mime, data: img.base64 } }
-        ], job.controller.signal));
+        ai = cleanAi(await claudeJson({
+          system: medicineSystemPrompt(),
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: img.mime, data: img.base64 } },
+            { type: 'text', text: photoInstruction(mode) }
+          ],
+          schema: MEDICINE_SCHEMA
+        }, job.controller.signal));
       }
       const outcome = resolveAnalysis(ai);
       state.analysis = { ai, demo, photo: img.dataUrl, mode, dbId: outcome.dbId, guess: !!outcome.guess };
@@ -737,7 +817,7 @@ Respond with ONLY a JSON object:
         go('#/result');
       }
     } catch (err) {
-      handleAiFailure(job, err);
+      handleAiFailure(job, err, () => analyzePhoto(img, mode));
     } finally {
       if (aiJob === job) hideOverlay();
       endAiJob(job);
@@ -749,7 +829,11 @@ Respond with ONLY a JSON object:
     const job = beginAiJob();
     showOverlay(t('searchingAi'), t('analyzingSub'));
     try {
-      const ai = cleanAi(await geminiCall([{ text: namePrompt(q) }], job.controller.signal));
+      const ai = cleanAi(await claudeJson({
+        system: medicineSystemPrompt(),
+        content: [{ type: 'text', text: nameInstruction(q) }],
+        schema: MEDICINE_SCHEMA
+      }, job.controller.signal));
       const outcome = resolveAnalysis(ai);
       state.analysis = { ai, demo: false, photo: null, mode: 'name', dbId: outcome.dbId, guess: !!outcome.guess };
       endAiJob(job);
@@ -763,7 +847,7 @@ Respond with ONLY a JSON object:
         go('#/result');
       }
     } catch (err) {
-      handleAiFailure(job, err);
+      handleAiFailure(job, err, () => askAiByName(q));
     } finally {
       if (aiJob === job) hideOverlay();
       endAiJob(job);
@@ -1761,7 +1845,12 @@ Respond with ONLY a JSON object:
     const job = beginAiJob();
     showOverlay(t('searchingAi'), t('analyzingSub'));
     try {
-      const raw = await geminiCall([{ text: interactionPrompt(state.ixList.map((x) => x.name)) }], job.controller.signal);
+      const names = state.ixList.map((x) => String(x.name).slice(0, 120));
+      const raw = await claudeJson({
+        system: interactionSystemPrompt(),
+        content: [{ type: 'text', text: `Medicines taken together: ${JSON.stringify(names)}` }],
+        schema: INTERACTION_SCHEMA
+      }, job.controller.signal);
       const obj = Array.isArray(raw) ? { interactions: raw } : raw && typeof raw === 'object' ? raw : {};
       const list = Array.isArray(obj.interactions) ? obj.interactions.filter((x) => x && typeof x === 'object') : [];
       state.ixAi = {
@@ -1778,7 +1867,7 @@ Respond with ONLY a JSON object:
       const box = $('#ix-results');
       if (box) box.scrollIntoView({ block: 'start' });
     } catch (err) {
-      handleAiFailure(job, err);
+      handleAiFailure(job, err, runIxAi);
     } finally {
       if (aiJob === job) hideOverlay();
       endAiJob(job);
@@ -1849,14 +1938,14 @@ Respond with ONLY a JSON object:
   $('#btn-save-settings').addEventListener('click', () => {
     state.apiKey = $('#api-key').value.trim();
     state.model = $('#api-model').value.trim() || CONFIG.defaultModel;
-    if (state.apiKey) store.set('apiKey', state.apiKey); else store.del('apiKey');
-    store.set('model', state.model);
+    if (state.apiKey) store.set('anthropicKey', state.apiKey); else store.del('anthropicKey');
+    store.set('claudeModel', state.model);
     $('#dlg-settings').close();
     toast(t('saved'));
     render(false);
   });
   $('#btn-clear-key').addEventListener('click', () => {
-    state.apiKey = ''; $('#api-key').value = ''; store.del('apiKey');
+    state.apiKey = ''; $('#api-key').value = ''; store.del('anthropicKey');
     toast(t('keyCleared'));
     render(false);
   });

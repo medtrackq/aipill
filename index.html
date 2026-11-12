@@ -57,6 +57,7 @@
       <div class="spinner" aria-hidden="true"></div>
       <p class="overlay-title" id="overlay-title"></p>
       <p class="overlay-sub" id="overlay-sub"></p>
+      <p class="overlay-sub" id="overlay-elapsed" aria-hidden="true"></p>
       <button type="button" class="btn btn-secondary btn-block" id="btn-cancel-ai" style="margin-top:1.25rem" data-i18n="cancel">ยกเลิก</button>
     </div>
   </div>
@@ -66,12 +67,12 @@
     <form method="dialog" class="sheet-body" id="settings-form">
       <h2 id="settings-title" data-i18n="settingsTitle">ตั้งค่า AI (ไม่บังคับ)</h2>
       <div class="field">
-        <label for="api-key" data-i18n="apiKeyLabel">Gemini API Key</label>
-        <input type="password" id="api-key" class="input" autocomplete="off" spellcheck="false" placeholder="AIza…">
+        <label for="api-key" data-i18n="apiKeyLabel">Anthropic API Key</label>
+        <input type="password" id="api-key" class="input" autocomplete="off" spellcheck="false" placeholder="sk-ant-…">
         <p class="help" data-i18n="apiKeyHelp"></p>
       </div>
       <div class="field">
-        <label for="api-model" data-i18n="modelLabel">โมเดล Gemini</label>
+        <label for="api-model" data-i18n="modelLabel">โมเดล Claude</label>
         <input type="text" id="api-model" class="input" autocomplete="off" spellcheck="false">
       </div>
       <div class="btn-row">

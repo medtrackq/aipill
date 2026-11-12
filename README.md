@@ -16,10 +16,11 @@ python3 -m http.server 8000
 แล้วเปิด <http://localhost:8000>. กล้องและไมโครโฟนต้องเปิดผ่าน `https://` หรือ `localhost` เท่านั้น
 นำขึ้น GitHub Pages, Netlify หรือ static hosting ใดก็ได้
 
-**โหมด AI:** กดปุ่ม ⚙️ แล้วใส่ Gemini API Key (โมเดลเริ่มต้น `gemini-3.8-flash` เปลี่ยนได้)
+**โหมด AI:** กดปุ่ม ⚙️ แล้วใส่ Anthropic API Key (สร้างได้ที่ Anthropic Console ซึ่งคิดค่าใช้จ่ายแยกจากแพ็กเกจ claude.ai) โมเดลเริ่มต้นคือ `claude-opus-5-5` ที่ effort `low` เพื่อให้ตอบเร็ว เปลี่ยนโมเดลได้ในหน้าตั้งค่า และปรับ effort ได้ที่ `CONFIG.effort`
+แอปเรียก Claude ผ่าน SDK ทางการ (`@anthropic-ai/sdk` 1.3.0) ที่ bundle ไว้ใน `vendor/` และโหลดเฉพาะตอนใช้ AI ครั้งแรก ใช้ structured outputs ทำให้คำตอบตรงรูปแบบ JSON ที่กำหนดเสมอ และเปิด server-side fallback (`fallbacks: "default"`) ไว้ ถ้า Opus ปฏิเสธคำขอ ระบบจะส่งต่อให้โมเดลสำรองตอบแทน
 ถ้าไม่ใส่คีย์ แอปจะทำงานในโหมดสาธิต: การวิเคราะห์ภาพใช้ข้อมูลจำลองและมีป้ายบอกชัดเจน
 ส่วนการค้นหา การระบุเม็ดยา การสแกนบาร์โค้ด และการตรวจยาตีกันจากฐานข้อมูล ทำงานได้ครบโดยไม่ต้องใช้คีย์
-การเรียก AI หมดเวลาใน 45 วินาที และกดยกเลิกได้ตลอด
+การเรียก AI หมดเวลาใน 60 วินาที กดยกเลิกได้ตลอด มีตัวนับวินาทีระหว่างรอ และถ้าเกิดข้อผิดพลาด ข้อความจะค้างบนจอพร้อมปุ่มลองใหม่
 
 ## สิ่งที่ทำตามโจทย์
 
@@ -44,7 +45,8 @@ index.html        โครงหน้า, แถบเครื่องมื
 css/styles.css    ธีมปกติ + คอนทราสต์สูง, รหัสสี safe / warn / danger
 js/i18n.js        ข้อความ UI 3 ภาษา
 js/drugs.js       ฐานข้อมูลยาตัวอย่าง 12 รายการ + ปฏิกิริยาระหว่างยา (aliases = ชื่ออื่นของยาตัวนั้น, categories = คำกว้าง ๆ ที่ใช้แค่แนะนำ)
-js/app.js         router, ค้นหา, ระบุเม็ดยา, สแกนบาร์โค้ด, Gemini, ตรวจยาตีกัน
+js/app.js         router, ค้นหา, ระบุเม็ดยา, สแกนบาร์โค้ด, Claude API, ตรวจยาตีกัน
+vendor/           Anthropic SDK (bundle) + ใบอนุญาต ดูวิธี build ใหม่ใน vendor/README.md
 ```
 
 การตั้งค่าอยู่ที่ `CONFIG` ด้านบนของ `js/app.js`
@@ -56,9 +58,9 @@ js/app.js         router, ค้นหา, ระบุเม็ดยา, ส�
 1. **ฐานข้อมูลยาเป็นตัวอย่าง** สรุปจากเอกสารกำกับยามาตรฐาน **ต้องให้เภสัชกรตรวจทาน** และควรเชื่อมกับแหล่งข้อมูลทางการ เช่น ฐานข้อมูลผลิตภัณฑ์ของ อย. หรือบัญชียาของโรงพยาบาล
 2. **ภาพอ้างอิงเป็นภาพประกอบ (SVG)** ไม่ใช่ภาพถ่ายจริง และมีป้ายบอกในแอป ถ้ามีภาพถ่ายจริงจากแหล่งทางการ ให้ใส่ในช่อง `photo` ของยาแต่ละตัว
 3. **บาร์โค้ด:** ยังไม่มีรหัส EAN จริงในฐานข้อมูล ให้เพิ่มในช่อง `barcodes: []` ตอนนี้ระบบอ่านชื่อยาและเลขทะเบียนตำรับยาที่อยู่ใน QR ได้
-4. **API Key อยู่ในเบราว์เซอร์:** เหมาะกับต้นแบบเท่านั้น ระบบจริงควรเรียก Gemini ผ่าน backend/proxy ของตัวเอง
+4. **API Key อยู่ในเบราว์เซอร์:** เหมาะกับต้นแบบเท่านั้น ระบบจริงควรเรียก Claude ผ่าน backend/proxy ของตัวเอง แล้วเอา `dangerouslyAllowBrowser` ออก
 5. **รองรับตามเบราว์เซอร์:** การค้นหาด้วยเสียงใช้ Web Speech API (Chrome/Edge/Safari) สแกนบาร์โค้ดใช้ `BarcodeDetector` ถ้ามี ถ้าไม่มีจะโหลด ZXing 0.21.3 จาก CDN พร้อมตรวจ SRI hash (`CONFIG.zxingIntegrity`) ถ้าเปลี่ยนเวอร์ชันต้องอัปเดต hash ด้วย
 
 ---
 
-**English summary:** A no-login, senior-friendly medicine checker (Thai/English/Chinese). It has three big entry points (pill identifier, barcode/package scan, type-or-speak search), adjustable large text, a high-contrast mode, voice search and read-aloud. Detail pages are colour-coded green/orange/red (always with icons and text), with emergency call buttons, sources, and clear "AI – unverified" labelling. Typo-tolerant "did you mean" search, fallback guidance when a scan fails, expiry checking with Buddhist-era years, and a drug interaction checker with duplicate-ingredient detection. Static files, no build. Gemini is optional; without a key the photo analysis runs in demo mode. The sample drug database must be reviewed by a pharmacist before real use.
+**English summary:** A no-login, senior-friendly medicine checker (Thai/English/Chinese). It has three big entry points (pill identifier, barcode/package scan, type-or-speak search), adjustable large text, a high-contrast mode, voice search and read-aloud. Detail pages are colour-coded green/orange/red (always with icons and text), with emergency call buttons, sources, and clear "AI – unverified" labelling. Typo-tolerant "did you mean" search, fallback guidance when a scan fails, expiry checking with Buddhist-era years, and a drug interaction checker with duplicate-ingredient detection. Static files, no build. AI uses Claude (`claude-opus-5-5`, effort `low`) through the official Anthropic SDK, vendored in `vendor/`, with structured JSON output. An Anthropic API key is optional; without one the photo analysis runs in demo mode. The sample drug database must be reviewed by a pharmacist before real use.

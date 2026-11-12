@@ -564,6 +564,9 @@
     cautions: strList('things to be careful about (food, milk, alcohol, drowsiness, timing)'),
     dangers: strList('contraindications and serious risks'),
     side_effects: strList('common side effects'),
+    dose_per_time: str('amount per dose, number and unit only (e.g. "1–2 tablets", "500 mg"), "" if unknown'),
+    dose_interval: str('time between doses, number and unit only (e.g. "4–6 hours"), "" if not stated'),
+    dose_max_per_day: str('maximum amount in 24 hours, number and unit only (e.g. "8 tablets"), "" if not stated'),
     pill_count: { anyOf: [{ type: 'integer' }, { type: 'null' }], description: 'pills or capsules clearly visible, null if not countable' },
     expiry_date: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'expiry as YYYY-MM-DD or YYYY-MM (Gregorian), null if not visible' },
     confidence: { type: 'integer', description: 'certainty of the identification, 0 to 100' },
@@ -614,6 +617,8 @@ ${catalogForPrompt()}
 
 The user's recorded drug allergies: ${state.allergies.length ? JSON.stringify(state.allergies.map((a) => String(a.name).slice(0, 80))) : 'none'}.
 Set allergy_warning when the medicine is one of these, contains one of them, belongs to the same drug class, or belongs to a class with known cross-allergy; say which allergy and that the user must not take it before asking a doctor or pharmacist. Otherwise use "".
+
+The dose_* fields are shown in large print: copy them from the label directions when visible, otherwise from the standard adult dose in the usage text. For a prescription-only medicine without visible directions, leave them "" rather than guess.
 
 Write every human-readable value in ${aiLanguageName()}, in short simple sentences suitable for elderly readers. Use "" or [] when something is unknown.`;
   }
@@ -758,6 +763,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
       cautions: arr(raw.cautions),
       dangers: arr(raw.dangers),
       side_effects: arr(raw.side_effects),
+      dose: { per: s(raw.dose_per_time).slice(0, 40), every: s(raw.dose_interval).slice(0, 40), max: s(raw.dose_max_per_day).slice(0, 40) },
       pill_count: count,
       expiry_date: s(raw.expiry_date) || null,
       confidence: conf,
@@ -1000,18 +1006,28 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     try { r.start(); } catch (e) { recog = null; btn.setAttribute('aria-pressed', 'false'); setLabels(false); voiceProblem(t('voiceError')); }
   }
 
+  // Every speaking button has class "speak-btn"; its labels come from
+  // data-label-off / data-label-on (i18n keys). One utterance at a time:
+  // tapping the playing button stops it, tapping another one switches.
   let speaking = false;
+  let speakToken = 0;
+  function speakLabel(b, on) {
+    const l = b.querySelector('.btn-label');
+    if (l) l.textContent = t(on ? b.dataset.labelOn || 'stopReading' : b.dataset.labelOff || 'readAloud');
+  }
   function stopSpeaking() {
+    speakToken++;
     if ('speechSynthesis' in window) window.speechSynthesis.cancel();
     speaking = false;
-    $$('[data-action="read-aloud"]').forEach((b) => {
-      b.setAttribute('aria-pressed', 'false');
-      const l = b.querySelector('.btn-label'); if (l) l.textContent = t('readAloud');
-    });
+    $$('.speak-btn').forEach((b) => { b.setAttribute('aria-pressed', 'false'); speakLabel(b, false); });
   }
   function readAloud(text, btn) {
     if (!('speechSynthesis' in window)) { toast(t('ttsUnsupported')); return; }
-    if (speaking) { stopSpeaking(); return; }
+    if (speaking) {
+      const same = btn.getAttribute('aria-pressed') === 'true';
+      stopSpeaking();
+      if (same) return;
+    }
     const synth = window.speechSynthesis;
     synth.cancel();
     const u = new SpeechSynthesisUtterance(text);
@@ -1020,10 +1036,12 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     const prefix = u.lang.slice(0, 2);
     const voice = synth.getVoices().find((v) => v.lang && v.lang.toLowerCase().startsWith(prefix));
     if (voice) u.voice = voice;
-    u.onend = u.onerror = () => stopSpeaking();
+    // cancel() fires onend/onerror of the previous utterance later: ignore it
+    const token = ++speakToken;
+    u.onend = u.onerror = () => { if (token === speakToken) stopSpeaking(); };
     speaking = true;
     btn.setAttribute('aria-pressed', 'true');
-    const l = btn.querySelector('.btn-label'); if (l) l.textContent = t('stopReading');
+    speakLabel(btn, true);
     synth.speak(u);
   }
 
@@ -1396,24 +1414,143 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     return renderDrugView({ kind: drug ? 'db' : 'ai', drug, ai: a.ai, demo: a.demo, guess: !!a.guess, photo: a.photo, compareId: '__result', fromAi: true });
   }
 
-  function listItems(items) {
-    return `<ul>${items.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>`;
+  // ----- drug page -----
+  // Pictograms in front of every warning line. The keyword found EARLIEST
+  // in the sentence picks the picture (a longer keyword wins a tie), so
+  // "ห้ามใช้เกินขนาด อาจทำให้ตับ…" shows the overdose picture, not the liver.
+  const PK = 'stroke="#0E1B17" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"';
+  const PNO = '<circle cx="24" cy="24" r="20" fill="none" stroke="#DC2626" stroke-width="3.5"/><path d="M10 10 38 38" stroke="#DC2626" stroke-width="3.5" stroke-linecap="round"/>';
+  const PICTOS = {
+    overdose: `<rect x="4" y="27" width="20" height="11" rx="5.5" fill="#fff" ${PK}/><rect x="16" y="34" width="20" height="11" rx="5.5" fill="#fff" ${PK}/><rect x="8" y="14" width="20" height="11" rx="5.5" fill="#fff" ${PK} transform="rotate(-20 18 19)"/><circle cx="37" cy="13" r="9" fill="#DC2626"/><path d="M37 8v6M37 18v.5" stroke="#fff" stroke-width="3" stroke-linecap="round"/>`,
+    dengue: `<ellipse cx="17" cy="15" rx="9" ry="4.5" fill="#DCEBFA" ${PK} transform="rotate(-25 17 15)"/><ellipse cx="31" cy="15" rx="9" ry="4.5" fill="#DCEBFA" ${PK} transform="rotate(25 31 15)"/><ellipse cx="24" cy="27" rx="4" ry="10" fill="#5B4636" ${PK}/><path d="M24 17 20 6M21 27l-10 6M21 31l-7 10M27 27l10 6M27 31l7 10" fill="none" ${PK}/>`,
+    pregnant: `<circle cx="22" cy="9" r="5" fill="#FFD8B5" ${PK}/><path d="M18 16h8c2 4 2 6 4 8 6 3 6 12 0 13l-2 1v6H18v-8c-2-5-2-13 0-20Z" fill="#F3A3BF" ${PK}/>`,
+    alcohol: `<path d="M14 15h16v20a3 3 0 0 1-3 3H17a3 3 0 0 1-3-3Z" fill="#FFE7A8" ${PK}/><path d="M30 19h4a4 4 0 0 1 0 8h-4" fill="none" ${PK}/><path d="M14 15c0-5 16-5 16 0" fill="#fff" ${PK}/>${PNO}`,
+    liver: `<path d="M5 24C5 13 18 10 28 13c10 3 15 11 10 18-5 7-19 7-26 4-4-2-7-6-7-11Z" fill="#E9785F" ${PK}/><path d="M24 20v7M24 31v.5" stroke="#fff" stroke-width="3" stroke-linecap="round"/>`,
+    kidney: `<path d="M18 9c-7 0-10 7-10 15s3 15 10 15c4 0 5-3 3-6-2-3-2-7 0-10 2-3 1-14-3-14Z" fill="#E9785F" ${PK}/><path d="M30 9c7 0 10 7 10 15s-3 15-10 15c-4 0-5-3-3-6 2-3 2-7 0-10-2-3-1-14 3-14Z" fill="#E9785F" ${PK}/>`,
+    bleed: `<path d="M24 5C18 15 11 22 11 30a13 13 0 0 0 26 0c0-8-7-15-13-25Z" fill="#DC2626" ${PK}/><path d="M17 30a7 7 0 0 0 7 7" stroke="#fff" stroke-width="2.5" fill="none" stroke-linecap="round"/>`,
+    milk: `<path d="M15 16 20 8h8l5 8v24a2 2 0 0 1-2 2H17a2 2 0 0 1-2-2Z" fill="#fff" ${PK}/><path d="M15 16h18" ${PK}/><rect x="19" y="24" width="10" height="9" rx="2" fill="#4F8FD6"/>`,
+    pills: `<g transform="rotate(-25 17 18)"><rect x="5" y="12" width="24" height="12" rx="6" fill="#fff" ${PK}/><path d="M17 12v12" ${PK}/></g><circle cx="32" cy="32" r="9" fill="#F4CF3A" ${PK}/><path d="M26 32h12" ${PK}/>`,
+    label: `<rect x="6" y="7" width="24" height="33" rx="3" fill="#fff" ${PK}/><path d="M11 15h14M11 21h10M11 27h12" ${PK}/><circle cx="32" cy="31" r="8" fill="#FFE7A8" ${PK}/><path d="m38 37 6 6" stroke="#0E1B17" stroke-width="3" stroke-linecap="round"/>`,
+    sun: `<circle cx="24" cy="24" r="8" fill="#F4CF3A" ${PK}/><path d="M24 5v5M24 38v5M5 24h5M38 24h5M10.5 10.5 14 14M34 34l3.5 3.5M10.5 37.5 14 34M34 14l3.5-3.5" ${PK}/>`,
+    drowsy: `<path d="M31 8a15 15 0 1 0 10 23A12 12 0 0 1 31 8Z" fill="#FFE7A8" ${PK}/><path d="M8 8h7l-7 8h7" fill="none" ${PK}/>`,
+    rash: `<circle cx="24" cy="24" r="17" fill="#FFD8B5" ${PK}/><circle cx="17" cy="19" r="2.5" fill="#DC2626"/><circle cx="29" cy="15" r="2" fill="#DC2626"/><circle cx="31" cy="27" r="2.5" fill="#DC2626"/><circle cx="18" cy="31" r="2" fill="#DC2626"/><circle cx="24" cy="23" r="1.8" fill="#DC2626"/>`,
+    foot: `<path d="M16 5h10v18c0 4 4 6 10 8 5 2 6 10 0 11H14c-4 0-6-3-6-6s3-5 4-8c2-5 4-10 4-23Z" fill="#FFD8B5" ${PK}/><path d="M29 25c2-2 5-2 7 0" fill="none" stroke="#DC2626" stroke-width="2.4" stroke-linecap="round"/>`,
+    muscle: `<path d="M7 37c0-8 4-14 10-18l4-9h8l-2 8c6 0 13 4 13 12 0 7-6 11-14 11H11c-2 0-4-2-4-4Z" fill="#FFD8B5" ${PK}/><path d="M21 29c3-3 8-3 10 0" fill="none" ${PK}/>`,
+    breath: `<path d="M24 5v13" ${PK}/><path d="M21 16c-4-4-11-2-13 8-2 10 0 16 6 16 5 0 7-5 7-11Z" fill="#F3A3BF" ${PK}/><path d="M27 16c4-4 11-2 13 8 2 10 0 16-6 16-5 0-7-5-7-11Z" fill="#F3A3BF" ${PK}/>`,
+    heart: `<path d="M24 41S6 30 6 18a9 9 0 0 1 18-3 9 9 0 0 1 18 3c0 12-18 23-18 23Z" fill="#E9785F" ${PK}/><path d="M11 24h6l3-5 4 9 3-4h8" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>`,
+    dizzy: `<circle cx="24" cy="27" r="15" fill="#FFD8B5" ${PK}/><path d="M17 26a3 3 0 1 1 3 3M27 26a3 3 0 1 1 3 3M20 35q4-2 8 0" fill="none" ${PK}/><path d="M13 9c3-4 8-1 4 3M31 7c3-3 7 0 3 4" fill="none" stroke="#2563EB" stroke-width="2.4" stroke-linecap="round"/>`,
+    eye: `<path d="M4 24s7-12 20-12 20 12 20 12-7 12-20 12S4 24 4 24Z" fill="#fff" ${PK}/><circle cx="24" cy="24" r="6" fill="#4F8FD6" ${PK}/>`,
+    headache: `<circle cx="22" cy="27" r="15" fill="#FFD8B5" ${PK}/><path d="M17 27h.01M27 27h.01" stroke="#0E1B17" stroke-width="3.5" stroke-linecap="round"/><path d="M18 34q4-3 8 0" fill="none" ${PK}/><path d="M41 4l-5 8h5l-4 8" fill="none" stroke="#E9785F" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`,
+    stomach: `<path d="M20 5v9c0 4-8 6-10 14-2 9 5 15 14 14 9-1 16-8 14-16-1-5-6-6-9-3-3 3-6 2-6-2V5" fill="#F3A3BF" ${PK}/>`,
+    tooth: `<path d="M14 7c-5 0-8 5-6 10 1 4 3 7 3 12 0 7 2 12 5 12s3-9 8-9 5 9 8 9 5-5 5-12c0-5 2-8 3-12 2-5-1-10-6-10-4 0-6 2-10 2s-6-2-10-2Z" fill="#fff" ${PK}/>`,
+    food: `<ellipse cx="24" cy="31" rx="19" ry="9" fill="#fff" ${PK}/><path d="M15 29c0-10 10-17 19-17 0 9-6 17-19 17Z" fill="#5FB36A" ${PK}/><path d="M18 27c4-4 8-7 13-10" fill="none" ${PK}/>`,
+    child: `<circle cx="24" cy="11" r="6" fill="#FFD8B5" ${PK}/><path d="M16 21h16l-3 11v10h-4v-7h-2v7h-4V32Z" fill="#4F8FD6" ${PK}/>`,
+    elderly: `<circle cx="20" cy="9" r="5" fill="#FFD8B5" ${PK}/><path d="M15 16h9l3 12-4 1v13h-5V30l-4-1Z" fill="#B7C3BE" ${PK}/><path d="M32 23v19M32 23q0-4 4-4" fill="none" stroke="#8A4A00" stroke-width="2.8" stroke-linecap="round"/>`,
+    doctor: `<rect x="10" y="8" width="28" height="34" rx="4" fill="#fff" ${PK}/><rect x="18" y="5" width="12" height="7" rx="2" fill="#BFE6D3" ${PK}/><path d="M24 20v12M18 26h12" stroke="#047857" stroke-width="4" stroke-linecap="round"/>`,
+    phone: `<circle cx="24" cy="24" r="19" fill="#DC2626"/><g transform="translate(12 12)" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">${ICON_PATHS.phone}</g>`,
+    ok: `<circle cx="24" cy="24" r="17" fill="#FFD8B5" ${PK}/><path d="M18 21h.01M30 21h.01" stroke="#0E1B17" stroke-width="3.5" stroke-linecap="round"/><path d="M16 29q8 7 16 0" fill="none" ${PK}/>`,
+    // fallbacks, one per section colour
+    fbDanger: `<path d="M16 5h16l11 11v16L32 43H16L5 32V16Z" fill="#DC2626" ${PK}/><path d="m18 18 12 12M30 18 18 30" stroke="#fff" stroke-width="3.5" stroke-linecap="round"/>`,
+    fbWarn: `<path d="M24 6 44 40H4Z" fill="#F4CF3A" ${PK}/><path d="M24 18v10M24 34v.5" stroke="#0E1B17" stroke-width="3.5" stroke-linecap="round"/>`,
+    fbInfo: `<circle cx="24" cy="24" r="18" fill="#DCEBFA" ${PK}/><path d="M24 22v11M24 15v.5" stroke="#1E4E8C" stroke-width="3.5" stroke-linecap="round"/>`
+  };
+  // Latin keywords are lower case. ไต must not match ไตรมาส (trimester).
+  const PICTO_TERMS = [
+    ['overdose', ['เกินขนาด', 'overdose', 'exceed', 'too much', '过量']],
+    ['dengue', ['ไข้เลือดออก', 'dengue', '登革']],
+    ['pregnant', ['ตั้งครรภ์', 'ให้นมบุตร', 'pregnan', 'breastfeed', '孕', '哺乳']],
+    ['alcohol', ['แอลกอฮอล์', 'สุรา', 'เหล้า', 'alcohol', 'heavy drinking', '酒']],
+    ['liver', ['ตับ', 'liver', '肝']],
+    ['kidney', [/ไต(?!รมาส)/, 'ปัสสาวะ', 'kidney', 'urine', '肾', '尿']],
+    ['bleed', ['เลือดออก', 'ฟกช้ำ', 'เลือดกำเดา', 'อุจจาระสีดำ', 'อุจจาระดำ', 'เป็นเลือด', 'bleed', 'bruis', 'black stool', 'blood in', 'vomiting blood', '出血', '瘀', '黑便', '便血', '血尿']],
+    ['milk', ['นม', 'โยเกิร์ต', 'แคลเซียม', 'milk', 'yoghurt', 'yogurt', 'calcium', '牛奶', '酸奶', '钙']],
+    ['pills', ['ยาใหม่', 'สมุนไพร', 'อาหารเสริม', 'ยาลดกรด', 'ยาแก้ปวด', 'แบ่งยา', 'โอเมพราโซล', 'โคลพิโดเกรล', 'แอสไพริน', 'nsaid', 'supplement', 'herbal', 'antacid', 'omeprazole', 'clopidogrel', 'aspirin', 'share it', '草药', '保健品', '抗酸', '奥美拉唑', '氯吡格雷', '阿司匹林']],
+    ['label', ['ฉลาก', 'ยาแก้หวัด', 'label', 'cold remed', '标签', '感冒药']],
+    ['sun', ['แดด', 'sunlight', '阳光', '日晒', '日光']],
+    ['drowsy', ['ง่วง', 'ขับรถ', 'นอนไม่หลับ', 'drows', 'drive', 'sleep', '嗜睡', '驾驶', '失眠']],
+    ['rash', ['ผื่น', 'แพ้', 'ลมพิษ', 'คัน', 'rash', 'allerg', 'hives', 'itch', '皮疹', '过敏', '荨麻疹', '瘙痒']],
+    ['foot', ['ข้อเท้าบวม', 'ankle swelling', '脚踝肿']],
+    ['muscle', ['กล้ามเนื้อ', 'เอ็น', 'อ่อนแรง', 'muscle', 'tendon', 'weakness', '肌']],
+    ['breath', ['หายใจ', 'breath', '呼吸']],
+    ['heart', ['หัวใจ', 'เจ็บหน้าอก', 'ใจสั่น', 'ความดัน', 'heart', 'chest', 'palpitation', 'blood pressure', '心脏', '胸痛', '心悸', '血压']],
+    ['dizzy', ['เวียนศีรษะ', 'เวียนหัว', 'หน้ามืด', 'เป็นลม', 'หกล้ม', 'สับสน', 'dizz', 'faint', 'confus', '头晕', '晕', '跌倒']],
+    ['eye', ['ต้อหิน', 'ตาพร่า', 'glaucoma', 'blurred', '青光眼', '视力模糊']],
+    ['headache', ['ปวดศีรษะ', 'ปวดหัว', 'headache', '头痛']],
+    ['stomach', ['กระเพาะ', 'ปวดท้อง', 'แสบท้อง', 'แสบร้อนกลางอก', 'คลื่นไส้', 'ท้องเสีย', 'ท้องผูก', 'ท้องอืด', 'อาเจียน', 'กลืนลำบาก', 'stomach', 'nausea', 'heartburn', 'diarrh', 'constipat', 'bloat', 'vomit', 'swallow', '胃', '恶心', '腹泻', '便秘', '呕吐', '吞咽']],
+    ['tooth', ['ทันตแพทย์', 'ถอนฟัน', 'ทำฟัน', 'dentist', 'tooth', '牙']],
+    ['food', ['ผักใบเขียว', 'เกรปฟรุต', 'อาหาร', 'grapefruit', 'vegetable', 'food', 'meal', '西柚', '蔬菜', '饭', '食物']],
+    ['child', ['เด็ก', 'child', '儿童']],
+    ['elderly', ['ผู้สูงอายุ', 'older adult', 'over age 60', 'elderly', '老年', '老人']],
+    ['doctor', ['ผ่าตัด', 'สารทึบรังสี', 'แพทย์', 'doctor', 'surgery', '医生', '手术']],
+    ['phone', ['โทร', '1669', '1367', 'โรงพยาบาล', 'call', 'hospital', '拨打', '医院']],
+    ['ok', ['ผลข้างเคียงน้อย', 'uncommon', '少见', '很少']]
+  ];
+  function pictoFor(text, fallback) {
+    const raw = String(text || '');
+    const low = raw.toLowerCase();
+    let best = null;
+    for (const [id, terms] of PICTO_TERMS) {
+      for (const term of terms) {
+        let i, len;
+        if (term instanceof RegExp) {
+          const m = term.exec(raw);
+          if (!m) continue;
+          i = m.index; len = m[0].length;
+        } else {
+          i = low.indexOf(term);
+          if (i < 0) continue;
+          len = term.length;
+        }
+        if (!best || i < best.i || (i === best.i && len > best.len)) best = { id, i, len };
+      }
+    }
+    if (!best) return { id: fallback, word: '' };
+    // a Latin keyword stem ("drows") is widened to its whole word ("drowsiness")
+    let s = best.i, e = best.i + best.len;
+    if (/[a-z]/i.test(raw[s])) {
+      while (s > 0 && /[\w-]/.test(raw[s - 1])) s--;
+      while (e < raw.length && /\w/.test(raw[e])) e++;
+    }
+    return { id: best.id, word: raw.slice(s, e) };
   }
-  // A colour-coded block: tile icon + title + level label (never colour alone)
-  function section(kind, iconName, title, body, badgeText) {
-    return `<section class="section section-${kind}">
-      <div class="section-head"><span class="tile tile-${kind}">${icon(iconName)}</span><h2>${esc(title)}</h2>${badgeText ? `<span class="badge badge-${kind}">${esc(badgeText)}</span>` : ''}</div>
-      ${body}
-    </section>`;
+  function pictoSvg(id) {
+    return `<svg viewBox="0 0 48 48" aria-hidden="true" focusable="false">${PICTOS[id] || PICTOS.fbInfo}</svg>`;
   }
+
+  // bold the keyword and every number with a unit ("1–2 เม็ด", "4,000 mg")
+  const NUM_UNIT = /(\d[\d,.]*(?:\s*[–-]\s*\d[\d,.]*)?\s*(?:มก\.|มิลลิกรัม|เม็ด|แคปซูล|ชั่วโมง|ชม\.|วัน|ครั้ง|นาที|ปี|เท่า|mg|tablets?|capsules?|hours?|days?|times?|minutes?|years?|毫克|片|粒|小时|天|次|分钟|岁|倍)|\b1669\b|\b1367\b)/gi;
+  function highlight(text, word) {
+    let h = esc(text);
+    if (word) {
+      const w = esc(word);
+      const i = h.indexOf(w);
+      if (i >= 0) h = `${h.slice(0, i)}<strong>${w}</strong>${h.slice(i + w.length)}`;
+    }
+    return h.replace(NUM_UNIT, '<strong>$1</strong>');
+  }
+  function pictoList(items, fallback) {
+    return `<ul class="pg-list">${items.map((x) => {
+      const p = pictoFor(x, fallback);
+      return `<li><span class="pg">${pictoSvg(p.id)}</span><span class="pg-text">${highlight(x, p.word)}</span></li>`;
+    }).join('')}</ul>`;
+  }
+
   function cardHead(iconName, title, id) {
-    return `<div class="section-head"><span class="tile tile-brand">${icon(iconName)}</span><h2${id ? ` id="${id}"` : ''}>${esc(title)}</h2></div>`;
+    return `<div class="section-head"><span class="tile tile-brand">${icon(iconName)}</span><h2${id ? ` id="${id}"` : ''} tabindex="-1">${esc(title)}</h2></div>`;
+  }
+
+  // "1–2 tablets" -> big "1–2" + unit; anything without a number stays text
+  function doseTile(k, value) {
+    const v = String(value).replace(/^(ทุก|ครั้งละ|ไม่เกิน(?:วันละ)?|every|up to|max(?:imum)?|每隔|每次|最多)\s*/i, '');
+    const m = /^(\d[\d,.]*(?:\s*[–-]\s*\d[\d,.]*)?)\s*(.*)$/.exec(v);
+    return m ? { k, n: m[1], u: m[2] } : { k, t: v };
   }
 
   // build a language-independent view model from DB data or AI output
   function viewData(vm) {
     if (vm.kind === 'db') {
       const d = vm.drug;
+      const dose = d.dose;
       return {
         generic: tr(d.generic),
         genericEn: d.generic.en,
@@ -1429,10 +1566,18 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
         urgent: (d.urgent || []).map(tr),
         looks: d.looks || [],
         photoRef: d.photo || null,
-        highAlert: !!d.highAlert
+        highAlert: !!d.highAlert,
+        dose: dose ? {
+          rx: !!dose.rx,
+          for: dose.for ? tr(dose.for) : '',
+          note: dose.note ? tr(dose.note) : '',
+          tiles: dose.tiles.map((x) => (x.t ? { k: x.k, t: tr(x.t) } : { k: x.k, n: x.n, u: tr(x.u) }))
+        } : null
       };
     }
     const a = vm.ai;
+    const ad = a.dose || {};
+    const tiles = [['per', ad.per], ['every', ad.every], ['max', ad.max]].filter((x) => x[1]).map(([k, val]) => doseTile(k, val));
     return {
       generic: a.generic_name || a.brand_name,
       genericEn: '',
@@ -1448,8 +1593,107 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
       urgent: [],
       looks: [],
       photoRef: null,
-      highAlert: false
+      highAlert: false,
+      dose: tiles.length ? { rx: false, for: '', note: '', tiles } : null
     };
+  }
+
+  // the information sections, most dangerous first after "what / how"
+  function drugSections(v) {
+    const secs = [];
+    if (v.indications) secs.push({ id: 'sec-use', key: 'use', kind: 'safe', icon: 'check', title: t('indicationsTitle'), text: v.indications });
+    if (v.usage) secs.push({ id: 'sec-usage', key: 'usage', kind: 'safe', icon: 'clipboard', title: t('usageTitle'), text: v.usage });
+    if (v.dangers.length) secs.push({ id: 'sec-danger', key: 'danger', kind: 'danger', icon: 'danger', title: t('dangerTitle'), items: v.dangers, fb: 'fbDanger' });
+    if (v.cautions.length) secs.push({ id: 'sec-caution', key: 'caution', kind: 'warn', icon: 'warn', title: t('cautionTitle'), items: v.cautions, fb: 'fbWarn' });
+    if (v.sideEffects.length) secs.push({ id: 'sec-side', key: 'side', kind: 'warn', icon: 'info', title: t('sideTitle'), items: v.sideEffects, fb: 'fbInfo' });
+    secs.push({ id: 'sec-urgent', key: 'urgent', kind: 'danger', icon: 'phone', title: t('urgentTitle'), items: [...v.urgent, t('allergyUrgent')], fb: 'fbDanger', urgent: true });
+    return secs;
+  }
+  function callButtons(numbers) {
+    return `<div class="btn-row" style="margin-top:.85rem">${numbers.map((n, i) => `<a class="btn ${i ? 'btn-call-outline' : 'btn-call'} btn-sm" href="tel:${n}">${icon('phone')}<span>${esc(t(n === CONFIG.emergencyTel ? 'call1669' : 'call1367'))}</span></a>`).join('')}</div>`;
+  }
+  function renderSection(sec) {
+    const body = sec.items ? pictoList(sec.items, sec.fb) : `<p>${highlight(sec.text)}</p>`;
+    // a warning that names a hotline gets the call button right there
+    const said = (sec.items || []).join(' ');
+    const calls = sec.urgent ? [CONFIG.emergencyTel, CONFIG.poisonTel]
+      : [CONFIG.poisonTel, CONFIG.emergencyTel].filter((n) => said.includes(n));
+    return `<section class="section section-${sec.kind}" id="${sec.id}" aria-labelledby="${sec.id}-h">
+      <div class="section-head"><span class="tile tile-${sec.kind}">${icon(sec.icon)}</span><h2 id="${sec.id}-h" tabindex="-1">${esc(sec.title)}</h2>
+        <button type="button" class="btn-listen speak-btn" data-action="read-section" data-sec="${sec.id}" aria-pressed="false" data-label-on="stopShort" data-label-off="listenShort">${icon('volume')}<span class="btn-label">${esc(t('listenShort'))}</span><span class="sr-only"> ${esc(sec.title)}</span></button></div>
+      ${body}${calls.length ? callButtons(calls) : ''}
+    </section>`;
+  }
+
+  // "This medicine and you": the allergy history and the user's medicine
+  // list are checked automatically. Wording never says "safe to take".
+  function meRow(level, ico, title, sub, action) {
+    return `<li class="me-row me-${level}"><span class="me-ico">${icon(ico)}</span><div class="me-text"><strong>${esc(title)}</strong>${sub ? `<small>${esc(sub)}</small>` : ''}${action || ''}</div></li>`;
+  }
+  function meCard(vm, v, conflicts, aiAllergy, inList) {
+    const rows = [];
+    const ixLink = `<a href="#/interactions">${esc(t('meIxOpen'))}</a>`;
+    // allergies
+    if (conflicts.length) {
+      const c = conflicts[0], x = conflictText(c);
+      rows.push(meRow(c.level === 'cross' ? 'warn' : 'danger', 'allergy', x.title, x.sub));
+    } else if (aiAllergy) {
+      rows.push(meRow('danger', 'allergy', t('conflictAi', { w: aiAllergy })));
+    } else if (state.allergies.length) {
+      const list = t('meAllergyList', { list: state.allergies.map((a) => a.name).join(', ') });
+      rows.push(vm.kind === 'db' ? meRow('safe', 'shield', t('meAllergyOk'), list) : meRow('plain', 'info', t('meAllergyOkAi'), list));
+    } else if (state.allergyNone) {
+      rows.push(meRow('plain', 'info', t('allergyNoneSet')));
+    } else {
+      rows.push(meRow('plain', 'allergy', t('meAllergyUnknown'), '', `<a href="#/allergies">${esc(t('allergyAdd'))}</a>`));
+    }
+    // interactions with the medicines already on the user's list
+    const self = (x) => (vm.kind === 'db' ? x.id === vm.drug.id : norm(x.name) === norm(v.generic));
+    const others = state.ixList.filter((x) => !self(x));
+    if (!others.length) {
+      rows.push(meRow('plain', 'layers', t('meIxEmpty'), t('meIxEmptySub')));
+    } else if (vm.kind !== 'db') {
+      rows.push(meRow('plain', 'layers', t('meIxAi'), '', ixLink));
+    } else {
+      const known = others.filter((x) => x.id && drugById(x.id));
+      const unknown = others.filter((x) => !known.includes(x));
+      const hits = checkInteractions([{ name: v.generic, id: vm.drug.id }, ...known]).results
+        .filter((r) => r.a.id === vm.drug.id);
+      const ix = hits.slice(0, 3).map((r) => {
+        const li = levelInfo(r.level);
+        const level = r.level === 'major' ? 'danger' : r.level === 'moderate' ? 'warn' : 'plain';
+        return [level, li.icon, t(r.dup ? 'meIxDup' : 'meIxHit', { name: r.b.name }), r.dup ? li.label : `${li.label}: ${tr(r.text)}`];
+      });
+      if (!hits.length && known.length) ix.push(['safe', 'check', t('meIxNone'), t('meIxChecked', { list: known.map((x) => x.name).join(', ') })]);
+      if (unknown.length) ix.push(['plain', 'info', t('meIxUnknown', { list: unknown.map((x) => x.name).join(', ') }), '']);
+      // one link to the interaction page, under the last of these rows
+      ix.forEach((r, i) => rows.push(meRow(...r, i === ix.length - 1 && (hits.length || unknown.length) ? ixLink : '')));
+    }
+    return `<section class="card me-card" aria-labelledby="me-h">
+      <h2 id="me-h">${esc(t('meTitle'))}</h2>
+      <ul class="me-list">${rows.join('')}</ul>
+      <button type="button" class="btn btn-secondary btn-sm btn-block" data-action="add-ix" ${inList ? 'disabled' : ''}>${icon('plus')}<span>${esc(inList ? t('addedToCheck') : t('addToCheck'))}</span></button>
+    </section>`;
+  }
+
+  function doseCard(vm, v) {
+    const d = v.dose;
+    if (!d || !d.tiles.length) return '';
+    const caps = t('doseCap');
+    const tiles = d.tiles.map((x) => `<div class="dose-tile${x.k === 'max' ? ' dose-max' : ''}"><span class="dose-cap">${esc(caps[x.k] || '')}</span>${x.t
+      ? `<span class="dose-num dose-text">${esc(x.t)}</span>`
+      : `<span class="dose-num${x.n.length > 4 ? ' dose-long' : ''}">${esc(x.n)}</span><span class="dose-unit">${esc(x.u)}</span>`}</div>`).join('');
+    const badges = [
+      d.rx ? `<span class="badge badge-info">${esc(t('doseRx'))}</span>` : '',
+      d.for ? `<span class="badge badge-plain">${esc(d.for)}</span>` : '',
+      vm.kind === 'ai' ? `<span class="badge badge-warn">${icon('sparkle', 16)}AI</span>` : ''
+    ].join('');
+    return `<section class="card dose-card" aria-labelledby="dose-h">
+      <div class="card-head"><h2 id="dose-h">${esc(t('doseTitle'))}</h2>${badges}</div>
+      <div class="dose-tiles">${tiles}</div>
+      ${d.note ? `<p class="dose-note">${icon('warn')}<span>${esc(d.note)}</span></p>` : ''}
+      <p class="dose-foot">${esc(t('doseFoot'))} · <button type="button" class="link-btn" data-action="jump" data-jump="sec-usage">${esc(t('doseReadAll'))}</button></p>
+    </section>`;
   }
 
   function speechText(v, vm) {
@@ -1466,11 +1710,16 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     if (v.indications) parts.push(`${t('indicationsTitle')}. ${v.indications}`);
     if (v.usage) parts.push(`${t('usageTitle')}. ${v.usage}`);
     if (vm.ai && vm.ai.label_text) parts.push(`${t('labelTextLbl')}. ${vm.ai.label_text}`);
-    if (v.cautions.length) parts.push(`${t('cautionTitle')}. ${v.cautions.join(' ')}`);
     if (v.dangers.length) parts.push(`${t('dangerTitle')}. ${v.dangers.join(' ')}`);
+    if (v.cautions.length) parts.push(`${t('cautionTitle')}. ${v.cautions.join(' ')}`);
     parts.push(`${t('urgentTitle')}. ${[...v.urgent, t('allergyUrgent')].join(' ')}`);
     return parts.filter(Boolean).join('. ');
   }
+
+  // decorative background of the picture header
+  const DRUG_PIC_BG = `<svg class="drug-pic-bg" viewBox="0 0 390 230" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false">
+    <circle cx="195" cy="112" r="86" fill="#BFE6D3"/><circle cx="340" cy="46" r="26" fill="#FFE7A8"/>
+    <path d="M56 54l4 9 9 4-9 4-4 9-4-9-9-4 9-4Z" fill="#fff"/><path d="M310 140l3 7 7 3-7 3-3 7-3-7-7-3 7-3Z" fill="#fff"/></svg>`;
 
   function renderDrugView(vm) {
     const v = viewData(vm);
@@ -1499,7 +1748,16 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
       trust = `<div class="banner banner-safe" role="note"><span class="ico">${icon('shield', 26)}</span><div>${esc(t('aiMatchedDb'))}${ai && ai.confidence !== null ? `<small>${esc(t('confidence', { n: ai.confidence }))}</small>` : ''}</div></div>`;
     }
 
-    // reference image: real photo when available, otherwise an illustration
+    // big picture: real photo when available, otherwise the drawn pill(s)
+    const looks = v.looks.slice(0, 2);
+    let picArt, picTag = '';
+    if (v.photoRef) picArt = `<img src="${esc(v.photoRef)}" alt="${esc(t('referenceImg'))}: ${esc(v.generic)}">`;
+    else if (looks.length) { picArt = looks.map((l) => pillSvg(l, lookLabel(l))).join(''); picTag = t('illustrationTag'); }
+    else if (vm.photo) picArt = `<img src="${vm.photo}" alt="${esc(t('yourPhoto'))}">`;
+    else picArt = `<span class="drug-pic-ico">${icon('pill')}</span>`;
+    const canCompare = !!(v.photoRef || looks.length);
+
+    // reference image in the compare card
     const refFigure = v.photoRef
       ? `<img src="${esc(v.photoRef)}" alt="${esc(v.generic)}">`
       : v.looks.length ? pillSvg(v.looks[0], lookLabel(v.looks[0])) : `<span class="muted">${esc(t('noPhotoYet'))}</span>`;
@@ -1517,8 +1775,8 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     ].join('');
 
     const aiFacts = ai && vm.fromAi && (ai.label_text || ai.pill_count !== null || ai.expiry_date || vm.photo) ? `
-      <section class="section section-info">
-        <div class="section-head"><span class="tile tile-info">${icon('sparkle')}</span><h2>${esc(vm.demo ? t('demoFactsTitle') : t('aiReadTitle'))}</h2></div>
+      <section class="section section-info" id="sec-ai" aria-labelledby="sec-ai-h">
+        <div class="section-head"><span class="tile tile-info">${icon('sparkle')}</span><h2 id="sec-ai-h" tabindex="-1">${esc(vm.demo ? t('demoFactsTitle') : t('aiReadTitle'))}</h2></div>
         <div class="ai-facts">
           <div class="fact"><div class="fact-label">${esc(t('pillCountLbl'))}</div><div class="fact-value fact-big">${esc(ai.pill_count !== null ? t('pillCountUnit', { n: ai.pill_count }) : t('cannotCount'))}</div></div>
           ${exp ? `<div class="fact"><div class="fact-label">${esc(t('expiryLbl'))}</div><div class="fact-value">${esc(formatExpiry(exp))}</div></div>` : ''}
@@ -1527,46 +1785,53 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
         ${ai.label_text ? `<div class="fact" style="margin-top:.75rem"><div class="fact-label">${esc(t('labelTextLbl'))}</div><div class="fact-value label-text">${esc(ai.label_text)}</div></div>` : ''}
       </section>` : '';
 
-    const heroArt = v.photoRef ? `<img src="${esc(v.photoRef)}" alt="">`
-      : v.looks.length ? pillSvg(v.looks[0]) : icon('pill');
+    const secs = drugSections(v);
+    const jumpNames = t('jump');
+    const chips = [
+      ...secs.filter((s) => s.key === 'use' || s.key === 'usage'),
+      ...(aiFacts ? [{ id: 'sec-ai', key: 'ai', kind: 'info' }] : []),
+      ...secs.filter((s) => s.key !== 'use' && s.key !== 'usage'),
+      { id: 'compare', key: 'compare', kind: 'info' },
+      { id: 'sec-expiry', key: 'expiry', kind: 'plain' },
+      { id: 'sec-sources', key: 'sources', kind: 'plain' }
+    ];
+    const jumpBar = `<nav class="jump" aria-label="${esc(t('jumpLabel'))}">${chips.map((c) =>
+      `<button type="button" data-action="jump" data-jump="${c.id}"><span class="dot dot-${c.kind}" aria-hidden="true"></span>${esc(jumpNames[c.key])}</button>`).join('')}</nav>`;
+    const head = secs.filter((s) => s.key === 'use' || s.key === 'usage').map(renderSection).join('');
+    const rest = secs.filter((s) => s.key !== 'use' && s.key !== 'usage').map(renderSection).join('');
 
     const now = new Date();
     const years = [];
     for (let y = now.getFullYear() - 3; y <= now.getFullYear() + 8; y++) years.push(y);
 
     app.innerHTML = `
-      <div class="screen-head">
-        <button type="button" class="btn-back" data-action="back">${icon('arrowLeft')}<span>${esc(t('back'))}</span></button>
-      </div>
       ${allergyBanners(conflicts, aiAllergy)}
       ${exp && expiryStatus(exp) !== 'ok' ? expiryBanner(exp) : ''}
       ${v.highAlert ? `<div class="banner banner-danger" role="alert"><span class="ico">${icon('danger')}</span><div>${esc(t('highAlert'))}</div></div>` : ''}
       ${trust}
-      <header class="drug-hero">
-        <div class="drug-top">
-          <span class="drug-art" aria-hidden="true">${heroArt}</span>
-          <div style="min-width:0">
-            <div class="eyebrow">${esc(t('genericLabel'))}</div>
-            <h1 class="drug-generic" tabindex="-1">${esc(v.generic)}</h1>
-            ${v.genericEn && v.genericEn !== v.generic ? `<p class="drug-en">${esc(v.genericEn)}</p>` : ''}
-          </div>
+      <div class="drug-pic">
+        ${DRUG_PIC_BG}
+        <div class="drug-pic-row">
+          <button type="button" class="btn-back" data-action="back">${icon('arrowLeft')}<span>${esc(t('back'))}</span></button>
+          <button type="button" class="btn btn-primary btn-sm speak-btn" data-action="read-aloud" aria-pressed="false" data-label-on="stopReading" data-label-off="listenAll">${icon('volume')}<span class="btn-label">${esc(t('listenAll'))}</span></button>
         </div>
-        ${v.brands ? `<div class="eyebrow">${esc(t('brandLabel'))}</div><p class="drug-brand">${esc(v.brands)}</p>` : ''}
+        <div class="drug-pic-art">${picArt}${picTag ? `<span class="pic-tag">${esc(picTag)}</span>` : ''}</div>
+        ${canCompare ? `<div class="drug-pic-row end"><button type="button" class="btn btn-light btn-sm" data-action="compare-photo" data-id="${esc(vm.compareId)}">${icon('camera')}<span>${esc(t('compareShort'))}</span></button></div>` : ''}
+      </div>
+      <header class="drug-sheet">
+        <div class="eyebrow">${esc(t('genericLabel'))}</div>
+        <h1 class="drug-generic" tabindex="-1">${esc(v.generic)}</h1>
+        ${v.genericEn && v.genericEn !== v.generic ? `<p class="drug-en">${esc(v.genericEn)}</p>` : ''}
+        ${v.brands ? `<p class="drug-brand"><span class="eyebrow">${esc(t('brandLabel'))}</span> ${esc(v.brands)}</p>` : ''}
         <div class="drug-meta">${badges}</div>
-        <div class="btn-row">
-          <button type="button" class="btn btn-primary" data-action="read-aloud" aria-pressed="false">${icon('volume')}<span class="btn-label">${esc(t('readAloud'))}</span></button>
-          <button type="button" class="btn btn-secondary" data-action="add-ix" ${inList ? 'disabled' : ''}>${icon('plus')}<span>${esc(inList ? t('addedToCheck') : t('addToCheck'))}</span></button>
-        </div>
       </header>
 
-      ${v.indications ? section('safe', 'check', t('indicationsTitle'), `<p>${esc(v.indications)}</p>`, t('levelSafe')) : ''}
-      ${v.usage ? section('safe', 'clipboard', t('usageTitle'), `<p>${esc(v.usage)}</p>`, t('levelSafe')) : ''}
+      ${meCard(vm, v, conflicts, aiAllergy, inList)}
+      ${doseCard(vm, v)}
+      ${jumpBar}
+      ${head}
       ${aiFacts}
-      ${v.cautions.length ? section('warn', 'warn', t('cautionTitle'), listItems(v.cautions), t('levelCaution')) : ''}
-      ${v.sideEffects.length ? section('warn', 'info', t('sideTitle'), listItems(v.sideEffects), t('levelCaution')) : ''}
-      ${v.dangers.length ? section('danger', 'danger', t('dangerTitle'), listItems(v.dangers), t('levelDanger')) : ''}
-      ${section('danger', 'phone', t('urgentTitle'), listItems([...v.urgent, t('allergyUrgent')]) +
-        `<div class="btn-row" style="margin-top:.85rem"><a class="btn btn-call btn-sm" href="tel:${CONFIG.emergencyTel}">${icon('phone')}<span>${esc(t('call1669'))}</span></a><a class="btn btn-call-outline btn-sm" href="tel:${CONFIG.poisonTel}">${icon('phone')}<span>${esc(t('call1367'))}</span></a></div>`, t('levelDanger'))}
+      ${rest}
 
       <section class="card" id="compare" aria-labelledby="cmp-h">
         ${cardHead('image', t('photoTitle'), 'cmp-h')}
@@ -1580,7 +1845,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
         <button type="button" class="btn btn-secondary btn-block" style="margin-top:.85rem" data-action="compare-photo" data-id="${esc(vm.compareId)}">${icon('camera')}<span>${esc(t('comparePhoto'))}</span></button>
       </section>
 
-      <section class="card" aria-labelledby="exp-h">
+      <section class="card" id="sec-expiry" aria-labelledby="exp-h">
         ${cardHead('calendar', t('checkExpiry'), 'exp-h')}
         <p class="help" style="margin-top:0">${esc(t('checkExpirySub'))}</p>
         <div class="expiry-row" style="margin-top:.75rem">
@@ -1592,7 +1857,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
         <div id="exp-result" aria-live="polite" style="margin-top:.75rem">${exp ? expiryBanner(exp) : ''}</div>
       </section>
 
-      <section class="card sources" aria-labelledby="src-h">
+      <section class="card sources" id="sec-sources" aria-labelledby="src-h">
         ${cardHead('shield', t('sourcesTitle'), 'src-h')}
         ${vm.kind === 'db'
           ? `<ul>${(vm.drug.sources || []).map((x) => `<li>${esc(tr(x))}</li>`).join('')}</ul><p class="muted">${esc(t('reviewed', { d: vm.drug.reviewed || '-' }))}</p>`
@@ -1609,6 +1874,11 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     const readBtn = $('[data-action="read-aloud"]', app);
     const spokenAllergy = conflicts.length ? conflicts.map((c) => conflictText(c).title).join('. ') : aiAllergy ? t('conflictAi', { w: aiAllergy }) : '';
     readBtn.addEventListener('click', () => readAloud([spokenAllergy, speechText(v, vm)].filter(Boolean).join('. '), readBtn));
+    const sectionSpeech = {};
+    secs.forEach((s) => { sectionSpeech[s.id] = [s.title, s.text, ...(s.items || [])].filter(Boolean).join('. '); });
+    $$('[data-action="read-section"]', app).forEach((b) => {
+      b.addEventListener('click', () => readAloud(sectionSpeech[b.dataset.sec], b));
+    });
     $('[data-action="add-ix"]', app).addEventListener('click', (e) => {
       addToIxList(vm.kind === 'db' ? { name: tr(vm.drug.generic), id: vm.drug.id } : { name: v.generic, id: null });
       e.currentTarget.disabled = true;
@@ -1622,8 +1892,42 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     };
     $('#exp-month').addEventListener('change', onExp);
     $('#exp-year').addEventListener('change', onExp);
+    updateJump();
 
     return v.generic || t('appName');
+  }
+
+  // ----- section chips: jump, and follow the scroll -----
+  const reduceMotion = () => !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  function stickyOffset() {
+    const bar = $('.jump', app);
+    const appbar = $('.appbar');
+    return (appbar ? appbar.offsetHeight : 0) + (bar ? bar.offsetHeight : 0) + 8;
+  }
+  function jumpTo(id) {
+    const target = document.getElementById(id);
+    if (!target) return;
+    const y = target.getBoundingClientRect().top + window.scrollY - stickyOffset();
+    window.scrollTo({ top: Math.max(0, y), behavior: reduceMotion() ? 'auto' : 'smooth' });
+    const h = target.querySelector('h2');
+    if (h) { if (!h.hasAttribute('tabindex')) h.tabIndex = -1; h.focus({ preventScroll: true }); }
+  }
+  let jumpCurrent = null;
+  function updateJump() {
+    const bar = $('.jump', app);
+    if (!bar) { jumpCurrent = null; return; }
+    const buttons = $$('button[data-jump]', bar);
+    const off = stickyOffset() + 4;
+    let cur = null;
+    for (const b of buttons) {
+      const el = document.getElementById(b.dataset.jump);
+      if (el && el.getBoundingClientRect().top - off <= 0) cur = b;
+    }
+    // the last sections are too short to reach the top: at the very bottom, mark the last one
+    if (window.scrollY > 0 && window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2) cur = buttons[buttons.length - 1];
+    buttons.forEach((b) => { if (b === cur) b.setAttribute('aria-current', 'true'); else b.removeAttribute('aria-current'); });
+    if (cur && cur !== jumpCurrent) bar.scrollTo({ left: Math.max(0, cur.offsetLeft - 16), behavior: reduceMotion() ? 'auto' : 'smooth' });
+    jumpCurrent = cur;
   }
 
   // ----- not found / fallback -----
@@ -1934,6 +2238,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
       case 'pharmacist': openPharmacist(); break;
       case 'photo': requestPhoto('photo', { gallery: !!el.dataset.gallery }); break;
       case 'compare-photo': requestPhoto('compare', { compareId: el.dataset.id }); break;
+      case 'jump': jumpTo(el.dataset.jump); break;
       case 'ask-ai': askAiByName(el.dataset.q); break;
       case 'voice': {
         const input = document.getElementById(el.dataset.target);
@@ -2011,6 +2316,22 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   });
 
   window.addEventListener('pagehide', () => { stopSpeaking(); stopVoice(); });
+
+  // the sticky section chips sit right under the sticky app bar, whose
+  // height changes with the text size
+  const appbarEl = $('.appbar');
+  const syncAppbarH = () => { if (appbarEl) document.documentElement.style.setProperty('--appbar-h', `${appbarEl.offsetHeight}px`); };
+  if (appbarEl && 'ResizeObserver' in window) new ResizeObserver(syncAppbarH).observe(appbarEl);
+  window.addEventListener('resize', syncAppbarH);
+  syncAppbarH();
+
+  // the drug page's section chips follow the scroll position
+  let spyQueued = false;
+  window.addEventListener('scroll', () => {
+    if (spyQueued) return;
+    spyQueued = true;
+    requestAnimationFrame(() => { spyQueued = false; updateJump(); });
+  }, { passive: true });
 
   // ------------------------------------------------------------------
   // Start

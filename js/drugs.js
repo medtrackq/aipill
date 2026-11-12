@@ -32,6 +32,7 @@
  *   dangers      red: do not use / contraindications / dangerous misuse
  *   sideEffects  common side effects
  *   urgent       symptoms that need a doctor right away (red)
+ *   dose         big-number summary of `usage` (see DOSES at the end)
  *   sources      reference labels shown to the user
  *   reviewed     date the entry was last reviewed (YYYY-MM)
  */
@@ -797,6 +798,87 @@
       cross: []
     }
   ];
+
+  // ------------------------------------------------------------------
+  // Dose at a glance: the big-number tiles at the top of a drug page.
+  // Every value restates the drug's own `usage` text above (which is
+  // still shown in full) – never add a number that is not in it.
+  //   tiles  k: per | every | daily | max | when
+  //          n: the number shown large, u: its unit; or t: a short text
+  //   rx     true when the dose is "as prescribed" (shown as a badge)
+  //   for    who the numbers are for
+  //   note   the one rule people must not miss
+  // ------------------------------------------------------------------
+  const U = {
+    tab: L('เม็ด', 'tablets', '片'),
+    tab1: L('เม็ด', 'tablet', '片'),
+    mg: L('มก.', 'mg', '毫克'),
+    hr: L('ชั่วโมง', 'hours', '小时'),
+    time1: L('ครั้ง', 'time', '次')
+  };
+  const ADULTS = L('ผู้ใหญ่', 'Adults', '成人');
+  const SAME_TIME = L('เวลาเดิมทุกวัน', 'Same time daily', '每天固定时间');
+  const DOSES = {
+    paracetamol: {
+      for: L('ผู้ใหญ่และเด็ก 12 ปีขึ้นไป', 'Adults and children 12+', '成人及12岁以上儿童'),
+      tiles: [{ k: 'per', n: '1–2', u: U.tab }, { k: 'every', n: '4–6', u: U.hr }, { k: 'max', n: '8', u: U.tab }],
+      note: L('ไม่ควรใช้ติดต่อกันเกิน 5 วัน', 'Do not use for more than 5 days in a row', '连续使用不超过5天')
+    },
+    ibuprofen: {
+      for: ADULTS,
+      tiles: [{ k: 'per', n: '200–400', u: U.mg }, { k: 'every', n: '6–8', u: U.hr }, { k: 'max', n: '1,200', u: U.mg }],
+      note: L('กินทันทีหลังอาหาร พร้อมน้ำเต็มแก้ว', 'Straight after food, with a full glass of water', '饭后立即用一满杯水送服')
+    },
+    'aspirin-81': {
+      rx: true,
+      tiles: [{ k: 'daily', n: '1', u: U.time1 }, { k: 'when', t: L('หลังอาหาร', 'After food', '饭后') }],
+      note: L('ห้ามหยุดยาเอง', 'Do not stop on your own', '切勿自行停药')
+    },
+    warfarin: {
+      rx: true,
+      tiles: [{ k: 'daily', n: '1', u: U.time1 }, { k: 'when', t: SAME_TIME }],
+      note: L('ลืมกิน: ห้ามกินยาเพิ่มเป็น 2 เท่า', 'Missed a dose: never double the next one', '漏服时：切勿下次加倍')
+    },
+    clopidogrel: {
+      rx: true,
+      tiles: [{ k: 'per', n: '75', u: U.mg }, { k: 'daily', n: '1', u: U.time1 }],
+      note: L('ห้ามหยุดยาเองโดยไม่ปรึกษาแพทย์', 'Never stop without asking your doctor', '未经医生同意切勿停药')
+    },
+    omeprazole: {
+      tiles: [{ k: 'per', n: '20', u: U.mg }, { k: 'daily', n: '1', u: U.time1 },
+        { k: 'when', t: L('ก่อนอาหารเช้า 30–60 นาที', '30–60 min before breakfast', '早餐前30–60分钟') }],
+      note: L('กลืนทั้งแคปซูล ห้ามเคี้ยว', 'Swallow whole – do not chew', '整粒吞服，不要咀嚼')
+    },
+    amoxicillin: {
+      rx: true,
+      tiles: [{ k: 'per', n: '500', u: U.mg }, { k: 'every', n: '8', u: U.hr }],
+      note: L('กินให้หมดตามที่สั่ง แม้อาการดีขึ้นแล้ว', 'Finish the whole course, even if you feel better', '即使症状好转也要服完整个疗程')
+    },
+    ciprofloxacin: {
+      rx: true,
+      tiles: [{ k: 'every', n: '12', u: U.hr }],
+      note: L('ดื่มน้ำมาก ๆ และกินให้ครบตามที่สั่ง', 'Drink plenty of water and finish the course', '多喝水，服完整个疗程')
+    },
+    chlorpheniramine: {
+      for: ADULTS,
+      tiles: [{ k: 'per', n: '1', u: U.tab1 }, { k: 'every', n: '4–6', u: U.hr }, { k: 'max', n: '6', u: U.tab }],
+      note: L('เด็กให้ปรึกษาเภสัชกร', 'Children: ask a pharmacist', '儿童请咨询药剂师')
+    },
+    metformin: {
+      rx: true,
+      tiles: [{ k: 'when', t: L('พร้อมอาหารหรือหลังอาหารทันที', 'With or straight after meals', '随餐或饭后立即服用') }]
+    },
+    amlodipine: {
+      rx: true,
+      tiles: [{ k: 'daily', n: '1', u: U.time1 }, { k: 'when', t: SAME_TIME }],
+      note: L('ห้ามหยุดยาเอง แม้ความดันปกติแล้ว', 'Do not stop, even when your blood pressure is normal', '即使血压正常也不要自行停药')
+    },
+    simvastatin: {
+      rx: true,
+      tiles: [{ k: 'daily', n: '1', u: U.time1 }, { k: 'when', t: L('ตอนเย็นหรือก่อนนอน', 'Evening or bedtime', '晚上或睡前') }]
+    }
+  };
+  DRUGS.forEach((d) => { d.dose = DOSES[d.id] || null; });
 
   window.DRUG_DB = { DRUGS, INTERACTIONS, ALLERGY_GROUPS, L };
 })();

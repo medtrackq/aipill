@@ -611,7 +611,7 @@
 The input may be a photo of loose pills, a blister pack, a bottle, a box, or a hospital/clinic medicine bag (often a clear zip-lock bag with a printed label), or a medicine name the user typed.
 
 For a photo:
-1. Read ALL visible text (label, bag, blister foil, imprint), including text seen through clear plastic, into label_text.
+1. Read ALL visible text (label, bag, blister foil, imprint), including text seen through clear plastic, into label_text. Leave out any patient's name, hospital number (HN), ID card number, address or phone number: never copy them into any field.
 2. Describe the physical appearance.
 3. Count the pills or capsules that are clearly visible; null if counting is not possible.
 4. Find the expiry date (EXP / วันหมดอายุ / ใช้ก่อน). Thai labels may use Buddhist Era years (2570 = 2027): convert to Gregorian. null if not visible.

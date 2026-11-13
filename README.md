@@ -47,6 +47,7 @@ css/styles.css    ธีมปกติ + คอนทราสต์สูง, 
 js/i18n.js        ข้อความ UI 3 ภาษา
 js/drugs.js       ฐานข้อมูลยาตัวอย่าง 12 รายการ + ปฏิกิริยาระหว่างยา + กลุ่มยาสำหรับตรวจแพ้ยา (ALLERGY_GROUPS)
 js/app.js         router, ค้นหา, ถ่ายรูปยา, Claude API, ตรวจยาตีกัน
+icons/            ไอคอนแอป (favicon, apple-touch-icon, 192/512, maskable) + manifest.webmanifest สำหรับเพิ่มลงหน้าจอโฮม
 img/              ภาพประกอบหน้าแรก (ภาพตกแต่งเท่านั้น ห้ามใช้ภาพที่ AI สร้างเป็นภาพอ้างอิงเม็ดยา)
 vendor/           Anthropic SDK (bundle) + ใบอนุญาต ดูวิธี build ใหม่ใน vendor/README.md
 ```

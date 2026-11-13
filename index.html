@@ -59,6 +59,31 @@
   <input type="file" id="file-camera" accept="image/*" capture="environment" class="sr-only" tabindex="-1" aria-hidden="true">
   <input type="file" id="file-gallery" accept="image/*" class="sr-only" tabindex="-1" aria-hidden="true">
 
+  <!-- in-app camera with a framing guide -->
+  <div class="camera" id="camera" role="dialog" aria-modal="true" aria-labelledby="cam-title" hidden>
+    <video id="cam-video" playsinline muted autoplay></video>
+    <div class="cam-top">
+      <p class="cam-title" id="cam-title" data-i18n="camTitle">วางยาให้อยู่ในกรอบ</p>
+      <p class="cam-sub" data-i18n="camSub">ถือให้นิ่ง ในที่สว่าง ไม่ให้มีแสงสะท้อน</p>
+    </div>
+    <div class="cam-stage">
+      <div class="cam-frame" id="cam-frame" aria-hidden="true">
+        <svg viewBox="0 0 100 100" preserveAspectRatio="none" focusable="false"><path d="M2 22V10a8 8 0 0 1 8-8h12M78 2h12a8 8 0 0 1 8 8v12M98 78v12a8 8 0 0 1-8 8H78M22 98H10a8 8 0 0 1-8-8V78" fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>
+      </div>
+      <div class="cam-msg" id="cam-msg" role="alert" hidden>
+        <p class="cam-msg-title" data-i18n="camNoAccess">เปิดกล้องในแอปไม่ได้</p>
+        <p data-i18n="camNoAccessSub">ใช้กล้องของเครื่องแทน แล้วถ่ายให้ยาอยู่กลางภาพ</p>
+        <button type="button" class="btn btn-primary btn-block" id="cam-native"><span data-icon="camera" aria-hidden="true"></span><span data-i18n="camUseNative">ใช้กล้องของเครื่อง</span></button>
+      </div>
+    </div>
+    <div class="cam-bar">
+      <button type="button" class="cam-side" id="cam-close"><span data-icon="arrowLeft" aria-hidden="true"></span><span data-i18n="close">ปิด</span></button>
+      <button type="button" class="cam-shutter" id="cam-shutter" aria-label="ถ่ายรูป" data-i18n-aria="camShutter" disabled></button>
+      <button type="button" class="cam-side" id="cam-gallery"><span data-icon="image" aria-hidden="true"></span><span data-i18n="camGallery">คลังภาพ</span></button>
+    </div>
+    <button type="button" class="cam-torch" id="cam-torch" aria-pressed="false" hidden><span data-icon="zap" aria-hidden="true"></span><span data-i18n="camTorch">ไฟฉาย</span></button>
+  </div>
+
   <!-- waiting overlay -->
   <div class="overlay" id="overlay" hidden>
     <div class="overlay-box" role="status" aria-live="assertive">

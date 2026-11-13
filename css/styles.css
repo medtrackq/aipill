@@ -569,6 +569,44 @@ main.container { outline: none; min-height: 60vh; padding-bottom: 1rem; }
 .tips li { display: flex; gap: .75rem; align-items: center; padding: .7rem .8rem; border-radius: 16px; background: var(--surface-2); }
 .tips .ico { flex: none; width: 2.4rem; height: 2.4rem; border-radius: 12px; background: var(--surface); display: inline-flex; align-items: center; justify-content: center; font-size: 1.25rem; }
 
+/* ---------- in-app camera with a framing guide ---------- */
+body.cam-open { overflow: hidden; }
+.camera { position: fixed; inset: 0; z-index: 80; background: #000; color: #fff; display: grid; grid-template-rows: auto 1fr auto; grid-template-columns: minmax(0, 1fr); overflow: hidden; }
+.camera[hidden] { display: none; }
+#cam-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.cam-top, .cam-bar { position: relative; z-index: 2; text-shadow: 0 1px 4px rgba(0, 0, 0, .7); }
+.cam-top { text-align: center; padding: calc(env(safe-area-inset-top, 0px) + 16px) min(4.5rem, 72px) 8px; }
+.cam-title { margin: 0; font-family: var(--font-head); font-weight: 700; font-size: clamp(20px, 1.4rem, 30px); line-height: 1.3; }
+.cam-sub { margin: .25rem 0 0; font-size: clamp(14px, .95rem, 20px); }
+.cam-stage { position: relative; display: flex; align-items: center; justify-content: center; min-height: 0; padding: .5rem; }
+/* the square to put the medicine in; its huge shadow darkens the rest of the picture */
+.cam-frame { position: relative; z-index: 1; width: min(84vw, 26rem, 52vh); aspect-ratio: 1; border-radius: 28px; box-shadow: 0 0 0 200vmax rgba(0, 0, 0, .55); }
+.cam-frame svg { position: absolute; inset: -4px; width: calc(100% + 8px); height: calc(100% + 8px); overflow: visible; }
+.cam-msg { position: absolute; z-index: 3; left: 1rem; right: 1rem; max-width: 24rem; margin: 0 auto; background: var(--surface); color: var(--ink); border-radius: var(--radius); padding: 1.1rem; text-align: center; text-shadow: none; box-shadow: 0 16px 40px rgba(0, 0, 0, .4); }
+.cam-msg[hidden] { display: none; }
+.cam-msg p { margin: 0 0 .9rem; }
+.cam-msg-title { font-family: var(--font-head); font-weight: 700; font-size: 1.15rem; }
+.cam-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 12px; padding: 16px 16px calc(env(safe-area-inset-bottom, 0px) + 20px); }
+.cam-side {
+  justify-self: center; display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: .15rem;
+  min-width: min(4.5rem, 80px); max-width: 100%; min-height: min(3.6rem, 64px); padding: 6px 10px; border: 0; border-radius: 16px;
+  background: rgba(255, 255, 255, .16); color: #fff; font: inherit; font-weight: 600; font-size: clamp(13px, .9rem, 18px); cursor: pointer;
+}
+.cam-side svg { width: min(1.5rem, 26px); height: min(1.5rem, 26px); }
+.cam-shutter { width: min(5.2rem, 88px); height: min(5.2rem, 88px); border-radius: 50%; border: 6px solid #fff; background: #fff; box-shadow: inset 0 0 0 5px #000; cursor: pointer; }
+.cam-shutter:active:not(:disabled) { background: #d9d9d9; }
+.cam-shutter:disabled { opacity: .4; cursor: default; }
+.cam-shutter[hidden] { display: none; }
+.cam-torch {
+  position: absolute; z-index: 3; top: calc(env(safe-area-inset-top, 0px) + .75rem); right: .75rem;
+  display: inline-flex; flex-direction: column; align-items: center; gap: 2px; min-width: min(3.4rem, 60px); min-height: min(3.4rem, 60px); padding: 5px 6px;
+  border: 0; border-radius: 16px; background: rgba(255, 255, 255, .16); color: #fff; font: inherit; font-size: clamp(12px, .78rem, 15px); font-weight: 600; cursor: pointer;
+}
+.cam-torch[hidden] { display: none; }
+.cam-torch svg { width: min(1.4rem, 24px); height: min(1.4rem, 24px); }
+.cam-torch[aria-pressed="true"] { background: #ffe14d; color: #000; text-shadow: none; }
+.camera :focus-visible { outline: 3px solid #ffe14d; outline-offset: 3px; }
+
 /* ---------- overlay / sheets / toast ---------- */
 .overlay { position: fixed; inset: 0; z-index: 60; background: rgba(8, 20, 16, .5); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; padding: 1rem; }
 .overlay[hidden] { display: none; }

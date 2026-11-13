@@ -149,6 +149,7 @@
   // ------------------------------------------------------------------
   const ICON_PATHS = {
     pill: '<path d="m10.5 20.5 10-10a4.95 4.95 0 1 0-7-7l-10 10a4.95 4.95 0 1 0 7 7Z"/><path d="m8.5 8.5 7 7"/>',
+    zap: '<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>',
     // the app's own mark (same as the home-screen icon): scan frame + capsule
     logo: '<path d="M4 8V6a2 2 0 0 1 2-2h2"/><path d="M16 4h2a2 2 0 0 1 2 2v2"/><path d="M20 16v2a2 2 0 0 1-2 2h-2"/><path d="M8 20H6a2 2 0 0 1-2-2v-2"/><path d="M11.16 15.96 15.96 11.16a2.2 2.2 0 0 0-3.12-3.12L8.04 12.84a2.2 2.2 0 0 0 3.12 3.12Z"/><path d="m10.44 10.44 3.12 3.12"/>',
     camera: '<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/>',
@@ -928,9 +929,134 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   // ------------------------------------------------------------------
   function requestPhoto(mode = 'photo', opts = {}) {
     state.pendingPhoto = { mode, compareId: opts.compareId || null };
-    const input = opts.gallery ? $('#file-gallery') : $('#file-camera');
+    if (opts.gallery) { pickFile('#file-gallery'); return; }
+    openCamera();
+  }
+  function pickFile(sel) {
+    const input = $(sel);
     input.value = '';
     input.click();
+  }
+
+  // ------------------------------------------------------------------
+  // In-app camera with a framing guide. The phone's own camera app cannot
+  // show our frame, so the live picture is shown here, with a square to put
+  // the medicine in. Without camera access (old browser, permission
+  // refused) the phone's camera app is offered instead.
+  // ------------------------------------------------------------------
+  let cam = null;            // { stream, track, torch }
+  let camReturnFocus = null;
+  const camBox = () => $('#camera');
+  function camOpen() { return !camBox().hidden; }
+  function openCamera() {
+    const md = navigator.mediaDevices;
+    if (!window.isSecureContext || !md || !md.getUserMedia) { pickFile('#file-camera'); return; } // still inside the tap
+    const box = camBox();
+    camReturnFocus = document.activeElement;
+    box.hidden = false;
+    document.body.classList.add('cam-open');
+    $('#cam-msg').hidden = true;
+    $('#cam-torch').hidden = true;
+    $('#cam-shutter').hidden = false;
+    $('#cam-shutter').disabled = true;
+    // the phone's back button / gesture closes the camera, not the screen behind it
+    try { history.pushState({ aipillCam: true }, ''); } catch (e) { /* ignore */ }
+    $('#cam-close').focus();
+    md.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } } })
+      .then((stream) => {
+        if (!camOpen()) { stream.getTracks().forEach((x) => x.stop()); return; }  // closed meanwhile
+        const track = stream.getVideoTracks()[0];
+        cam = { stream, track, torch: false };
+        const v = $('#cam-video');
+        v.srcObject = stream;
+        v.play().catch(() => { /* the autoplay attribute covers it */ });
+        const ready = () => {
+          if (!cam || cam.stream !== stream) return;
+          $('#cam-shutter').disabled = false;
+          $('#cam-shutter').focus();
+          const caps = track.getCapabilities ? track.getCapabilities() : {};
+          if (caps.torch) $('#cam-torch').hidden = false;
+          announce(t('camTitle'));
+        };
+        if (v.readyState >= 2) ready(); else v.addEventListener('loadeddata', ready, { once: true });
+      })
+      .catch(() => {
+        if (!camOpen()) return;
+        stopCameraStream();
+        $('#cam-shutter').hidden = true;   // a dead shutter would only confuse
+        $('#cam-msg').hidden = false;
+        $('#cam-native').focus();
+      });
+  }
+  function stopCameraStream() {
+    if (cam) { cam.stream.getTracks().forEach((x) => x.stop()); cam = null; }
+    const v = $('#cam-video');
+    if (v) v.srcObject = null;
+  }
+  // resolves once the camera's history entry is gone, so a following
+  // navigation (to the result screen) cannot be undone by that step back
+  function closeCamera(fromHistory) {
+    stopCameraStream();
+    const box = camBox();
+    if (!box || box.hidden) return Promise.resolve();
+    box.hidden = true;
+    document.body.classList.remove('cam-open');
+    if (camReturnFocus && camReturnFocus.isConnected) camReturnFocus.focus({ preventScroll: true });
+    if (fromHistory || !(history.state && history.state.aipillCam)) return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => { window.removeEventListener('popstate', done); clearTimeout(timer); resolve(); };
+      const timer = setTimeout(done, 800);
+      window.addEventListener('popstate', done);
+      history.back();
+    });
+  }
+  // the photo is cut to the frame plus a margin, so the medicine fills it
+  function takeShot() {
+    const v = $('#cam-video');
+    if (!cam || !v.videoWidth) return;
+    const vw = v.videoWidth, vh = v.videoHeight;
+    const vr = v.getBoundingClientRect(), fr = $('#cam-frame').getBoundingClientRect();
+    const scale = Math.max(vr.width / vw, vr.height / vh);              // object-fit: cover
+    const ox = vr.left + (vr.width - vw * scale) / 2, oy = vr.top + (vr.height - vh * scale) / 2;
+    const pad = fr.width * 0.08;
+    const sx = Math.max(0, (fr.left - pad - ox) / scale), sy = Math.max(0, (fr.top - pad - oy) / scale);
+    const sw = Math.min(vw - sx, (fr.width + 2 * pad) / scale), sh = Math.min(vh - sy, (fr.height + 2 * pad) / scale);
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(sw));
+    c.height = Math.max(1, Math.round(sh));
+    c.getContext('2d').drawImage(v, sx, sy, sw, sh, 0, 0, c.width, c.height);
+    closeCamera().then(() => {
+      c.toBlob((blob) => { if (blob) handlePhotoFile(new File([blob], 'camera.jpg', { type: 'image/jpeg' })); }, 'image/jpeg', 0.92);
+    });
+  }
+  function toggleTorch() {
+    if (!cam) return;
+    const on = !cam.torch;
+    cam.track.applyConstraints({ advanced: [{ torch: on }] }).then(() => {
+      if (!cam) return;
+      cam.torch = on;
+      $('#cam-torch').setAttribute('aria-pressed', String(on));
+    }).catch(() => { $('#cam-torch').hidden = true; });
+  }
+  function wireCamera() {
+    $('#cam-close').addEventListener('click', () => closeCamera());
+    $('#cam-shutter').addEventListener('click', takeShot);
+    $('#cam-torch').addEventListener('click', toggleTorch);
+    $('#cam-gallery').addEventListener('click', () => { closeCamera(); pickFile('#file-gallery'); });
+    $('#cam-native').addEventListener('click', () => { closeCamera(); pickFile('#file-camera'); });
+    camBox().addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); closeCamera(); return; }
+      if (e.key !== 'Tab') return;
+      // keep the keyboard inside the camera
+      const items = $$('button', camBox()).filter((b) => !b.disabled && b.offsetParent !== null);
+      if (!items.length) return;
+      const i = items.indexOf(document.activeElement);
+      const next = e.shiftKey ? (i <= 0 ? items.length - 1 : i - 1) : (i === items.length - 1 ? 0 : i + 1);
+      e.preventDefault();
+      items[next].focus();
+    });
+    window.addEventListener('popstate', () => { if (camOpen()) closeCamera(true); });
+    document.addEventListener('visibilitychange', () => { if (document.hidden && camOpen()) closeCamera(); });
   }
   async function handlePhotoFile(file) {
     if (!file) return;
@@ -1092,6 +1218,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   function render(moveFocus) {
     stopSpeaking();
     stopVoice();
+    if (camOpen()) closeCamera(true);
     const r = parseRoute();
     let title = t('appName');
     try {
@@ -2211,6 +2338,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     toast(t('keyCleared'));
     render(false);
   });
+  wireCamera();
   $('#file-camera').addEventListener('change', (e) => handlePhotoFile(e.target.files && e.target.files[0]));
   $('#file-gallery').addEventListener('change', (e) => handlePhotoFile(e.target.files && e.target.files[0]));
 

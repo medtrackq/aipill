@@ -968,9 +968,12 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     r.onerror = null;
     try { r.abort(); } catch (e) { /* ignore */ }
   }
+  // opened from the home-screen icon (no browser bar): some phones block
+  // voice search there, so the messages point to typing or the browser
+  const isAppMode = () => !!((window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone);
   function startVoice(btn, onText) {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { voiceProblem(t('voiceUnsupported')); return; }
+    if (!SR) { voiceProblem(t(isAppMode() ? 'voiceUnsupportedApp' : 'voiceUnsupported')); return; }
     if (recog) { recog.stop(); return; }
     const r = new SR();
     recog = r;
@@ -998,7 +1001,8 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
       if (best) { announce(t('heard', { q: best })); onText(best); }
     };
     r.onerror = (e) => {
-      voiceProblem(e.error === 'not-allowed' || e.error === 'service-not-allowed' ? t('voiceDenied') : t('voiceError'));
+      const denied = e.error === 'not-allowed' || e.error === 'service-not-allowed';
+      voiceProblem(t(denied ? (isAppMode() ? 'voiceDeniedApp' : 'voiceDenied') : 'voiceError'));
     };
     r.onend = () => {
       if (recog === r) recog = null;

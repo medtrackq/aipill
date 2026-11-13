@@ -1173,7 +1173,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     const recent = state.recent.map(drugById).filter(Boolean);
     const ixCount = state.ixList.length;
     app.innerHTML = `
-      <div class="home-hero"><img src="img/home-hero.webp" alt="" width="1536" height="634" decoding="async" fetchpriority="high"></div>
+      <div class="home-hero"><img src="img/home-hero.webp" alt="" width="1376" height="768" decoding="async" fetchpriority="high"></div>
       <div class="home-sheet">
         <h1 class="home-title" tabindex="-1">${esc(t('homeTitle'))}</h1>
         <div class="pic-actions">

@@ -17,9 +17,11 @@
     // Claude model and effort. Opus 5.5 reads labels most accurately; "low"
     // effort keeps answers fast (raise to "medium" for harder photos).
     defaultModel: 'claude-opus-5-5',
-    // The Claude proxy (server/worker.js) holding the API key. When set, AI
-    // works for everybody without a key; a key typed in Settings still wins.
-    proxyUrl: '',
+    // The Claude proxy (server/worker.js) holding the API key: AI works for
+    // everybody without a key; a key typed in Settings still wins. The proxy
+    // only answers the app's own address (its ALLOWED_ORIGINS), so copies
+    // served from anywhere else (localhost, forks) stay in demo mode.
+    proxyUrl: location.origin === 'https://app.medtrackq.com' ? 'https://aipill-proxy.pratumsiri.workers.dev' : '',
     effort: 'low',
     // vendored official SDK, resolved relative to this script
     sdkUrl: new URL('../vendor/anthropic-sdk-1.3.0.min.mjs', SCRIPT_URL).href,

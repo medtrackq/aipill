@@ -1129,28 +1129,6 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   // ------------------------------------------------------------------
   // Screens
   // ------------------------------------------------------------------
-  // 2D scene behind the top of the home screen (decorative)
-  function heroArt() {
-    return `<svg viewBox="0 0 390 280" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false">
-      <rect width="390" height="280" fill="#DDF1E8"/>
-      <circle cx="318" cy="96" r="58" fill="#FFE7A8"/>
-      <circle cx="40" cy="96" r="22" fill="#FFFFFF" opacity=".7"/><circle cx="64" cy="90" r="16" fill="#FFFFFF" opacity=".7"/>
-      <path d="M0 214 C80 184 160 240 250 216 C310 200 350 206 390 196 L390 280 L0 280 Z" fill="#BFE6D3"/>
-      <path d="M22 232 C14 188 38 156 66 142 C68 184 52 212 22 232 Z" fill="#7CC5A1"/>
-      <path d="M34 238 C56 206 90 198 116 204 C96 230 66 242 34 238 Z" fill="#5FB08A"/>
-      <rect x="84" y="138" width="70" height="96" rx="14" fill="#F2994A"/><rect x="78" y="122" width="82" height="24" rx="8" fill="#0E1B17"/>
-      <rect x="94" y="162" width="50" height="42" rx="6" fill="#FFFFFF"/><rect x="102" y="172" width="34" height="6" rx="3" fill="#F2994A"/><rect x="102" y="184" width="24" height="6" rx="3" fill="#BFE6D3"/>
-      <rect x="192" y="74" width="118" height="196" rx="24" fill="#0E1B17"/><rect x="200" y="86" width="102" height="172" rx="17" fill="#FFFFFF"/>
-      <path d="M216 118 v-14 h14 M272 104 h14 v14 M286 214 v14 h-14 M230 228 h-14 v-14" stroke="#047857" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-      <g transform="rotate(-30 251 166)"><rect x="217" y="150" width="68" height="32" rx="16" fill="#F4CF3A"/><path d="M251 150 H233 a16 16 0 0 0 0 32 H251 Z" fill="#E9785F"/><rect x="223" y="156" width="18" height="6" rx="3" fill="#FFFFFF" opacity=".6"/></g>
-      <rect x="216" y="202" width="70" height="4" rx="2" fill="#047857" opacity=".45"/>
-      <g transform="rotate(12 344 232)"><rect x="306" y="206" width="78" height="54" rx="10" fill="#FFFFFF" stroke="#9ED5BA" stroke-width="3"/>
-        <circle cx="324" cy="222" r="8" fill="#DCEBFA"/><circle cx="345" cy="222" r="8" fill="#DCEBFA"/><circle cx="366" cy="222" r="8" fill="#DCEBFA"/>
-        <circle cx="324" cy="244" r="8" fill="#DCEBFA"/><circle cx="345" cy="244" r="8" fill="#FFFFFF" stroke="#9ED5BA" stroke-width="2"/><circle cx="366" cy="244" r="8" fill="#DCEBFA"/></g>
-      <circle cx="172" cy="250" r="10" fill="#FFFFFF" stroke="#0E1B17" stroke-width="2"/><line x1="172" y1="241" x2="172" y2="259" stroke="#0E1B17" stroke-width="1.5"/>
-      <ellipse cx="62" cy="258" rx="14" ry="8" fill="#FFFFFF" stroke="#0E1B17" stroke-width="2"/>
-    </svg>`;
-  }
   const IX_ART = `<svg viewBox="0 0 96 52" aria-hidden="true" focusable="false"><circle cx="22" cy="26" r="18" fill="#F3A3BF" stroke="#0E1B17" stroke-width="2"/><circle cx="74" cy="26" r="14" fill="#FFFFFF" stroke="#0E1B17" stroke-width="2"/><path d="M50 8 L42 28 H50 L45 44 L58 22 H50 L55 8 Z" fill="#E9785F" stroke="#0E1B17" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
   const HELP_ART = `<svg viewBox="0 0 96 52" aria-hidden="true" focusable="false"><path d="M8 10 a8 8 0 0 1 8 -8 h44 a8 8 0 0 1 8 8 v22 a8 8 0 0 1 -8 8 h-30 l-12 10 v-10 h-2 a8 8 0 0 1 -8 -8 Z" fill="#DCEBFA" stroke="#0E1B17" stroke-width="2" stroke-linejoin="round"/><rect x="33" y="10" width="10" height="24" rx="2" fill="#047857"/><rect x="26" y="17" width="24" height="10" rx="2" fill="#047857"/><circle cx="82" cy="36" r="12" fill="#FFE7A8" stroke="#0E1B17" stroke-width="2"/><path d="M77 36 l3 3 l6 -7" stroke="#0E1B17" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   function demoNotice() {
@@ -1195,7 +1173,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     const recent = state.recent.map(drugById).filter(Boolean);
     const ixCount = state.ixList.length;
     app.innerHTML = `
-      <div class="home-hero">${heroArt()}</div>
+      <div class="home-hero"><img src="img/home-hero.webp" alt="" width="1536" height="634" decoding="async" fetchpriority="high"></div>
       <div class="home-sheet">
         <h1 class="home-title" tabindex="-1">${esc(t('homeTitle'))}</h1>
         <div class="pic-actions">

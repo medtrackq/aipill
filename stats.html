@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <title>สถิติการใช้งาน · ตรวจสอบยา</title>
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@500;600;700&family=IBM+Plex+Sans+Thai+Looped:wght@400;500;600&display=swap">
+  <style>
+    /* Owner dashboard for usage statistics (data: server/worker.js /stats).
+       Colours: dataviz reference palette, slots 1–2 validated for both modes. */
+    :root {
+      color-scheme: light;
+      --page: #f3f6f5;
+      --surface: #fcfcfb;
+      --line: #e4e3df;
+      --grid: #e8e7e3;
+      --text-primary: #0b0b0b;
+      --text-secondary: #52514e;
+      --text-muted: #6b6a66;
+      --brand: #047857;
+      --series-1: #2a78d6;
+      --series-2: #eb6834;
+      --danger: #a01818;
+      --shadow: 0 1px 2px rgba(15, 30, 25, .04), 0 8px 24px rgba(15, 30, 25, .06);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --page: #121211;
+        --surface: #1a1a19;
+        --line: #2f2f2c;
+        --grid: #2a2a27;
+        --text-primary: #f0efec;
+        --text-secondary: #c3c2b7;
+        --text-muted: #a3a29a;
+        --brand: #34d399;
+        --series-1: #3987e5;
+        --series-2: #d95926;
+        --danger: #ff8a8a;
+        --shadow: none;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--page); color: var(--text-primary); font-family: "IBM Plex Sans Thai Looped", "IBM Plex Sans Thai", system-ui, sans-serif; font-size: 16px; line-height: 1.55; }
+    h1, h2, h3 { font-family: "IBM Plex Sans Thai", system-ui, sans-serif; line-height: 1.3; margin: 0; }
+    .wrap { max-width: 980px; margin: 0 auto; padding: 16px 16px 48px; }
+    header.top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: space-between; margin-bottom: 14px; }
+    .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .brand img { width: 40px; height: 40px; border-radius: 10px; flex: none; }
+    .brand h1 { font-size: 20px; }
+    .brand p { margin: 0; color: var(--text-secondary); font-size: 14px; }
+    .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .seg { display: inline-flex; padding: 3px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); }
+    .seg button { min-height: 40px; padding: 0 14px; border: 0; border-radius: 999px; background: transparent; color: var(--text-secondary); font: inherit; font-weight: 600; cursor: pointer; }
+    .seg button[aria-pressed="true"] { background: var(--text-primary); color: var(--surface); }
+    .btn { min-height: 44px; padding: 0 16px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--text-primary); font: inherit; font-weight: 600; cursor: pointer; }
+    .btn-primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+    @media (prefers-color-scheme: dark) { .btn-primary { color: #06261c; } }
+    .btn-link { border: 0; background: none; color: var(--text-secondary); text-decoration: underline; min-height: 44px; padding: 0 6px; font: inherit; cursor: pointer; }
+    .card { background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 16px; box-shadow: var(--shadow); }
+    .gate { max-width: 420px; margin: 12vh auto 0; }
+    .gate h2 { font-size: 20px; margin-bottom: 6px; }
+    .gate p { color: var(--text-secondary); margin: 0 0 14px; font-size: 15px; }
+    .gate label { display: block; font-weight: 600; margin-bottom: 6px; }
+    .gate input { width: 100%; min-height: 48px; padding: 0 14px; border-radius: 12px; border: 1px solid var(--text-muted); background: var(--surface); color: var(--text-primary); font: inherit; margin-bottom: 12px; }
+    .msg { margin: 10px 0 0; color: var(--danger); font-weight: 600; }
+    .meta { color: var(--text-muted); font-size: 13px; margin: 0 0 12px; }
+    .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 12px; }
+    .tile { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 12px 14px; }
+    .tile .k { color: var(--text-secondary); font-size: 14px; font-weight: 600; }
+    .tile .v { font-family: "IBM Plex Sans Thai", system-ui, sans-serif; font-size: 34px; font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; }
+    .tile .s { color: var(--text-muted); font-size: 13px; }
+    .tiles.small .v { font-size: 26px; }
+    .chart-card { margin-bottom: 12px; position: relative; }
+    .chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+    .chart-head h2 { font-size: 17px; }
+    .legend { display: flex; gap: 14px; flex-wrap: wrap; color: var(--text-secondary); font-size: 14px; }
+    .legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+    #chart svg { display: block; width: 100%; overflow: visible; }
+    #chart .col:focus { outline: none; }
+    #chart .col:focus-visible .hit { stroke: var(--text-primary); stroke-width: 2; }
+    #chart .col:hover .mark, #chart .col:focus-visible .mark { opacity: .82; }
+    .tip { position: absolute; z-index: 5; pointer-events: none; background: var(--surface); color: var(--text-primary); border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; box-shadow: 0 8px 24px rgba(0, 0, 0, .18); font-size: 14px; min-width: 150px; }
+    .tip[hidden] { display: none; }
+    .tip .d { color: var(--text-secondary); font-size: 13px; }
+    .tip .big { font-family: "IBM Plex Sans Thai", system-ui, sans-serif; font-size: 18px; font-weight: 700; }
+    .tip .row { display: flex; align-items: center; gap: 6px; }
+    .tip .row i { width: 12px; height: 3px; border-radius: 2px; display: inline-block; }
+    details { margin-top: 10px; }
+    summary { cursor: pointer; color: var(--text-secondary); font-weight: 600; min-height: 32px; }
+    .table-wrap { overflow-x: auto; margin-top: 8px; }
+    table { border-collapse: collapse; width: 100%; font-size: 14px; font-variant-numeric: tabular-nums; }
+    th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    th:first-child, td:first-child { text-align: left; }
+    th { color: var(--text-secondary); font-weight: 600; }
+    .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+    .list-card h3 { font-size: 16px; margin-bottom: 2px; }
+    .list-card .hint { color: var(--text-muted); font-size: 13px; margin: 0 0 8px; }
+    .rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+    .rows li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; align-items: center; }
+    .rows .name { overflow-wrap: anywhere; font-size: 15px; }
+    .rows .num { font-variant-numeric: tabular-nums; color: var(--text-secondary); font-size: 14px; text-align: right; }
+    .rows .bar { grid-column: 1 / -1; height: 8px; }
+    .rows .bar i { display: block; height: 100%; min-width: 2px; background: var(--series-1); border-radius: 0 4px 4px 0; }
+    .empty { color: var(--text-muted); font-size: 14px; margin: 4px 0 0; }
+    .privacy { color: var(--text-muted); font-size: 13px; margin-top: 18px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <div class="brand">
+        <img src="icons/icon.svg" alt="">
+        <div><h1>สถิติการใช้งาน</h1><p>ตรวจสอบยา · AI Pill</p></div>
+      </div>
+      <div class="controls" id="controls" hidden>
+        <div class="seg" role="group" aria-label="ช่วงเวลา">
+          <button type="button" data-days="7" aria-pressed="false">7 วัน</button>
+          <button type="button" data-days="30" aria-pressed="true">30 วัน</button>
+          <button type="button" data-days="90" aria-pressed="false">90 วัน</button>
+        </div>
+        <button type="button" class="btn" id="refresh">รีเฟรช</button>
+        <button type="button" class="btn-link" id="logout">ออกจากระบบ</button>
+      </div>
+    </header>
+
+    <form class="card gate" id="gate" hidden>
+      <h2>เข้าดูสถิติ</h2>
+      <p>ใส่รหัสผ่าน (ค่า <code>STATS_KEY</code> ที่ตั้งไว้ใน Worker)</p>
+      <label for="key">รหัสผ่าน</label>
+      <input type="password" id="key" autocomplete="current-password" required>
+      <button type="submit" class="btn btn-primary">ดูสถิติ</button>
+      <p class="msg" id="gate-msg" role="alert"></p>
+    </form>
+
+    <main id="dash" hidden>
+      <p class="meta" id="meta" aria-live="polite"></p>
+      <div class="tiles" id="tiles"></div>
+      <div class="tiles small" id="tiles2"></div>
+
+      <section class="card chart-card" aria-labelledby="chart-h">
+        <div class="chart-head">
+          <h2 id="chart-h">จำนวนคนที่ใช้ต่อวัน</h2>
+          <div class="legend"><span><i style="background:var(--series-1)"></i>ผู้ใช้เดิม</span><span><i style="background:var(--series-2)"></i>ผู้ใช้ใหม่</span></div>
+        </div>
+        <div id="chart"></div>
+        <div class="tip" id="tip" hidden></div>
+        <details>
+          <summary>ดูตัวเลขรายวัน</summary>
+          <div class="table-wrap"><table id="table"></table></div>
+        </details>
+      </section>
+
+      <div class="grid2" id="lists"></div>
+      <p class="privacy">ข้อมูลไม่ระบุตัวตน: นับจากรหัสเครื่องแบบสุ่มที่ถูกแฮช ไม่เก็บรูป ประวัติแพ้ยา หรือ IP เก็บไว้ 400 วัน · วันที่ตามเวลาประเทศไทย</p>
+    </main>
+  </div>
+
+  <script src="js/drugs.js"></script>
+  <script>
+  (function () {
+    'use strict';
+    const LOCAL = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+    const API = (LOCAL && new URLSearchParams(location.search).get('api')) || 'https://aipill-proxy.pratumsiri.workers.dev';
+    const KEY_STORE = 'aipill.statsKey';
+    const $ = (s) => document.querySelector(s);
+    const store = {
+      get() { try { return localStorage.getItem(KEY_STORE) || ''; } catch (e) { return ''; } },
+      set(v) { try { localStorage.setItem(KEY_STORE, v); } catch (e) { /* private mode */ } },
+      del() { try { localStorage.removeItem(KEY_STORE); } catch (e) { /* ignore */ } }
+    };
+    // DOM builder: text always goes in as textContent (search words are user data)
+    function el(tag, attrs, ...kids) {
+      const n = document.createElement(tag);
+      for (const [k, v] of Object.entries(attrs || {})) {
+        if (k === 'class') n.className = v; else if (k === 'style') n.setAttribute('style', v); else n.setAttribute(k, v);
+      }
+      for (const k of kids.flat()) if (k != null) n.append(k instanceof Node ? k : document.createTextNode(String(k)));
+      return n;
+    }
+    const nf = new Intl.NumberFormat('th-TH');
+    const dShort = new Intl.DateTimeFormat('th-TH', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+    const dLong = new Intl.DateTimeFormat('th-TH', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+    const asDate = (day) => new Date(`${day}T00:00:00Z`);
+
+    const DRUGS = (window.DRUG_DB && window.DRUG_DB.DRUGS) || [];
+    const drugName = (id) => { const d = DRUGS.find((x) => x.id === id); return d ? d.generic.th : id; };
+    const LABELS = {
+      features: { open: 'เปิดแอป', photo: 'ถ่ายรูปยา', search: 'ค้นหาชื่อยา (พิมพ์/พูด)', drug: 'เปิดหน้าข้อมูลยา', voice: 'ใช้ไมค์', ix: 'ตรวจยาตีกัน', allergy: 'บันทึกประวัติแพ้ยา', camera: 'เปิดกล้องในแอปไม่ได้', compare: 'ถ่ายเทียบเม็ดยา', ai_name: 'ให้ AI ค้นชื่อยา' },
+      photo: { ok: 'อ่านชื่อยาได้', pill_only: 'เห็นแต่เม็ดยา ไม่มีชื่อ', name_mismatch: 'ชื่อที่อ่านได้ไม่ตรง', blurry: 'ภาพไม่ชัด', too_dark: 'ภาพมืด', glare: 'แสงสะท้อน', too_far: 'ไกลเกินไป', not_medicine: 'ไม่พบยาในภาพ', not_found: 'ไม่พบข้อมูลยา', low_confidence: 'AI ไม่มั่นใจ', demo: 'โหมดสาธิต' },
+      modes: { app: 'ไอคอนบนหน้าจอโฮม (เต็มจอ)', web: 'เบราว์เซอร์' },
+      langs: { th: 'ไทย', en: 'English', zh: '中文', '': 'ไม่ทราบ' },
+      ai: { 200: 'สำเร็จ', quota_device: 'ครบโควตาของเครื่องวันนี้', quota_total: 'ครบโควตารวมของวัน', unreachable: 'ติดต่อ AI ไม่ได้', 429: 'Anthropic จำกัดชั่วคราว', 529: 'AI มีผู้ใช้มาก', 400: 'คำขอไม่ถูกต้อง', 401: 'คีย์ไม่ถูกต้อง', 403: 'ไม่มีสิทธิ์' }
+    };
+    const label = (group, k) => (LABELS[group] && LABELS[group][k]) || (group === 'ai' && /^5\d\d$/.test(k) ? `ระบบ AI ขัดข้อง (${k})` : k || 'ไม่ทราบ');
+
+    let days = 30, data = null;
+
+    async function load() {
+      const key = store.get();
+      if (!key) { showGate(''); return; }
+      $('#meta').textContent = 'กำลังโหลด…';
+      let res;
+      try {
+        res = await fetch(`${API}/stats?days=${days}`, { headers: { Authorization: `Bearer ${key}` }, cache: 'no-store' });
+      } catch (e) {
+        showDash(); $('#meta').textContent = 'เชื่อมต่อ Worker ไม่ได้ ลองรีเฟรชอีกครั้ง'; return;
+      }
+      if (res.status === 401) { store.del(); showGate('รหัสผ่านไม่ถูกต้อง'); return; }
+      if (!res.ok) {
+        let m = '';
+        try { m = (await res.json()).error.message; } catch (e) { /* ignore */ }
+        showDash();
+        $('#meta').textContent = /STATS_KEY/.test(m) ? 'ยังไม่ได้ตั้ง Secret ชื่อ STATS_KEY ใน Worker'
+          : /D1|DB/.test(m) ? 'ยังไม่ได้ผูกฐานข้อมูล D1 กับ Worker ในชื่อ DB'
+            : `โหลดสถิติไม่ได้ (${res.status})`;
+        return;
+      }
+      data = await res.json();
+      showDash();
+      render();
+    }
+    function showGate(msg) {
+      $('#gate').hidden = false; $('#dash').hidden = true; $('#controls').hidden = true;
+      $('#gate-msg').textContent = msg;
+      $('#key').focus();
+    }
+    function showDash() { $('#gate').hidden = true; $('#dash').hidden = false; $('#controls').hidden = false; }
+
+    // every day of the range, including days nobody came
+    function allDays() {
+      const out = [];
+      const byDay = Object.fromEntries((data.daily || []).map((d) => [d.day, d]));
+      const newBy = Object.fromEntries((data.newByDay || []).map((d) => [d.day, d.n]));
+      for (let t = asDate(data.since).getTime(); t <= asDate(data.today).getTime(); t += 86400000) {
+        const day = new Date(t).toISOString().slice(0, 10);
+        const d = byDay[day] || {};
+        const people = d.people || 0, fresh = Math.min(newBy[day] || 0, people);
+        out.push({ day, people, fresh, old: people - fresh, opens: d.opens || 0, photos: d.photos || 0, searches: d.searches || 0, drugs: d.drugs || 0, ai: d.ai || 0 });
+      }
+      return out;
+    }
+
+    function tile(k, v, s) { return el('div', { class: 'tile' }, el('div', { class: 'k' }, k), el('div', { class: 'v' }, nf.format(v)), s ? el('div', { class: 's' }, s) : null); }
+
+    function render() {
+      const rows = allDays();
+      const today = rows[rows.length - 1] || { people: 0 };
+      const sum = (f) => rows.reduce((a, r) => a + r[f], 0);
+      $('#meta').textContent = `ข้อมูล ${dShort.format(asDate(data.since))} – ${dShort.format(asDate(data.today))} · อัปเดต ${new Date(data.generated).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.`;
+      $('#tiles').replaceChildren(
+        tile('คนใช้วันนี้', today.people, today.fresh ? `ใหม่ ${nf.format(today.fresh)} คน` : 'ไม่มีคนใหม่'),
+        tile(`คนใช้ใน ${days} วัน`, data.people, 'นับคนละครั้ง'),
+        tile('ผู้ใช้ใหม่', sum('fresh'), `ใน ${days} วัน`),
+        tile('กลับมาใช้ซ้ำ', data.returning, 'ใช้มากกว่า 1 วัน'),
+        tile('ทั้งหมด', data.allTime.people, data.allTime.since ? `ตั้งแต่ ${dShort.format(asDate(data.allTime.since))}` : 'ยังไม่มีข้อมูล')
+      );
+      $('#tiles2').replaceChildren(
+        tile('ถ่ายรูปยา', sum('photos'), `ครั้ง ใน ${days} วัน`),
+        tile('ค้นหาชื่อยา', sum('searches'), `ครั้ง ใน ${days} วัน`),
+        tile('ใช้ AI สำเร็จ', sum('ai'), `ครั้ง ใน ${days} วัน`)
+      );
+      drawChart(rows);
+      drawTable(rows);
+      const featureRows = (data.features || []).map((x) => ({ name: label('features', x.k), n: x.people, s: `${nf.format(x.people)} คน · ${nf.format(x.n)} ครั้ง` }));
+      $('#lists').replaceChildren(
+        list('ใช้ฟีเจอร์อะไรบ้าง', 'จำนวนคนที่ใช้แต่ละอย่าง', featureRows),
+        list('ผลการถ่ายรูปยา', 'ถ้า "เห็นแต่เม็ดยา" เยอะ ควรสอนให้ถ่ายด้านที่มีชื่อยา', (data.photo || []).map((x) => ({ name: label('photo', x.k), n: x.n, s: `${nf.format(x.n)} ครั้ง` }))),
+        list('ยาที่เปิดดูมากที่สุด', '', (data.drugs || []).map((x) => ({ name: drugName(x.k), n: x.n, s: `${nf.format(x.n)} ครั้ง` }))),
+        list('ค้นหาแล้วไม่พบ', 'ยาที่ควรเพิ่มในฐานข้อมูล', (data.missed || []).map((x) => ({ name: x.k, n: x.n, s: `${nf.format(x.n)} ครั้ง` }))),
+        list('เปิดแบบไหน', 'จำนวนคน', (data.modes || []).map((x) => ({ name: label('modes', x.k), n: x.n, s: `${nf.format(x.n)} คน` }))),
+        list('มาจากที่ไหน', 'คนที่กดลิงก์มาจากเว็บหรือแอปอื่น', (data.referrers || []).map((x) => ({ name: x.k, n: x.n, s: `${nf.format(x.n)} คน` }))),
+        list('ภาษา', 'จำนวนคน', (data.langs || []).map((x) => ({ name: label('langs', x.k), n: x.n, s: `${nf.format(x.n)} คน` }))),
+        list('ประเทศ', 'จำนวนคน', (data.countries || []).map((x) => ({ name: x.k === 'TH' ? 'ไทย (TH)' : x.k || 'ไม่ทราบ', n: x.n, s: `${nf.format(x.n)} คน` }))),
+        list('คำขอ AI', 'ทุกครั้งที่แอปเรียก AI ผ่าน Worker', (data.ai || []).map((x) => ({ name: label('ai', x.k), n: x.n, s: `${nf.format(x.n)} ครั้ง` })))
+      );
+    }
+
+    function list(title, hint, rows) {
+      const max = Math.max(1, ...rows.map((r) => r.n));
+      return el('section', { class: 'card list-card' },
+        el('h3', {}, title), hint ? el('p', { class: 'hint' }, hint) : null,
+        rows.length
+          ? el('ul', { class: 'rows' }, rows.map((r) => el('li', {},
+            el('span', { class: 'name' }, r.name), el('span', { class: 'num' }, r.s),
+            el('span', { class: 'bar', 'aria-hidden': 'true' }, el('i', { style: `width:${Math.max(1, (r.n / max) * 100)}%` })))))
+          : el('p', { class: 'empty' }, 'ยังไม่มีข้อมูล'));
+    }
+
+    function drawTable(rows) {
+      const head = el('tr', {}, ['วันที่', 'คน', 'ใหม่', 'เปิดแอป', 'ถ่ายรูป', 'ค้นหา', 'หน้ายา', 'AI'].map((h) => el('th', { scope: 'col' }, h)));
+      const body = rows.slice().reverse().map((r) => el('tr', {}, el('td', {}, dShort.format(asDate(r.day))),
+        ...[r.people, r.fresh, r.opens, r.photos, r.searches, r.drugs, r.ai].map((v) => el('td', {}, nf.format(v)))));
+      $('#table').replaceChildren(el('thead', {}, head), el('tbody', {}, body));
+    }
+
+    // stacked columns: returning (slot 1) below, new (slot 2) on top,
+    // 2px surface gap between them, 4px rounded top, square at the baseline
+    const NS = 'http://www.w3.org/2000/svg';
+    function svg(tag, attrs) { const n = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v); return n; }
+    function topRounded(x, y, w, h, r) {
+      r = Math.max(0, Math.min(r, h, w / 2));
+      return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`;
+    }
+    function niceMax(v) {
+      if (v <= 4) return 4;
+      const p = Math.pow(10, Math.floor(Math.log10(v)));
+      for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p;
+      return 10 * p;
+    }
+    function drawChart(rows) {
+      const box = $('#chart');
+      const W = Math.max(280, box.clientWidth || 600), H = 220;
+      const m = { l: 34, r: 8, t: 22, b: 26 };
+      const pw = W - m.l - m.r, ph = H - m.t - m.b;
+      const top = niceMax(Math.max(...rows.map((r) => r.people), 1));
+      const y = (v) => m.t + ph - (v / top) * ph;
+      const slot = pw / rows.length;
+      const bw = Math.max(2, Math.min(24, slot * 0.7));
+      const s = svg('svg', { viewBox: `0 0 ${W} ${H}`, height: H, role: 'group', 'aria-label': 'จำนวนคนที่ใช้ต่อวัน' });
+      for (let i = 0; i <= 4; i++) {
+        const v = (top / 4) * i, yy = Math.round(y(v)) + 0.5;
+        s.append(svg('line', { x1: m.l, x2: W - m.r, y1: yy, y2: yy, stroke: 'var(--grid)', 'stroke-width': 1 }));
+        const tx = svg('text', { x: m.l - 6, y: yy + 4, 'text-anchor': 'end', 'font-size': 12, fill: 'var(--text-muted)' });
+        tx.textContent = nf.format(Math.round(v * 10) / 10);
+        s.append(tx);
+      }
+      const every = Math.ceil(rows.length / 7);
+      rows.forEach((r, i) => {
+        const cx = m.l + slot * i + slot / 2, x = cx - bw / 2;
+        const g = svg('g', { class: 'col', tabindex: 0, role: 'img', 'aria-label': `${dShort.format(asDate(r.day))}: ${r.people} คน (ใหม่ ${r.fresh})` });
+        g.append(svg('rect', { class: 'hit', x: m.l + slot * i, y: m.t, width: slot, height: ph, fill: 'transparent' }));
+        const gap = r.old && r.fresh ? 2 : 0;
+        const hOld = r.old ? (r.old / top) * ph : 0, hNew = r.fresh ? (r.fresh / top) * ph : 0;
+        const base = m.t + ph;
+        if (r.old) g.append(svg('path', { class: 'mark', d: r.fresh ? `M${x},${base}V${base - hOld}H${x + bw}V${base}Z` : topRounded(x, base - hOld, bw, hOld, 4), fill: 'var(--series-1)' }));
+        if (r.fresh) g.append(svg('path', { class: 'mark', d: topRounded(x, base - hOld - gap - hNew, bw, Math.max(0, hNew - (r.old ? 0 : 0)), 4), fill: 'var(--series-2)' }));
+        if ((i % every === 0 && rows.length - 1 - i >= every / 2) || i === rows.length - 1) {
+          const lab = svg('text', { x: cx, y: H - 8, 'text-anchor': 'middle', 'font-size': 12, fill: 'var(--text-muted)' });
+          lab.textContent = i === rows.length - 1 ? 'วันนี้' : dShort.format(asDate(r.day));
+          s.append(lab);
+        }
+        if (i === rows.length - 1 && r.people) {
+          const v = svg('text', { x: cx, y: y(r.people) - 6, 'text-anchor': 'middle', 'font-size': 13, 'font-weight': 600, fill: 'var(--text-primary)' });
+          v.textContent = nf.format(r.people);
+          g.append(v);
+        }
+        const show = () => tip(r, g);
+        g.addEventListener('pointerenter', show);
+        g.addEventListener('focus', show);
+        g.addEventListener('pointerleave', hideTip);
+        g.addEventListener('blur', hideTip);
+        s.append(g);
+      });
+      box.replaceChildren(s);
+    }
+    function tip(r, g) {
+      const t = $('#tip');
+      const row = (color, name, v) => el('div', { class: 'row' }, el('i', { style: `background:${color}` }), el('span', {}, `${name} ${nf.format(v)}`));
+      t.replaceChildren(
+        el('div', { class: 'd' }, dLong.format(asDate(r.day))),
+        el('div', { class: 'big' }, `${nf.format(r.people)} คน`),
+        row('var(--series-2)', 'ใหม่', r.fresh), row('var(--series-1)', 'เดิม', r.old),
+        el('div', { class: 'd' }, `ถ่ายรูป ${nf.format(r.photos)} · ค้นหา ${nf.format(r.searches)} · AI ${nf.format(r.ai)}`)
+      );
+      t.hidden = false;
+      const card = t.parentElement.getBoundingClientRect(), b = g.getBoundingClientRect();
+      const left = Math.min(Math.max(8, b.left - card.left + b.width / 2 - t.offsetWidth / 2), card.width - t.offsetWidth - 8);
+      t.style.left = `${left}px`;
+      t.style.top = `${Math.max(8, b.top - card.top - t.offsetHeight + 40)}px`;
+    }
+    function hideTip() { $('#tip').hidden = true; }
+
+    $('#gate').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const v = $('#key').value.trim();
+      if (!v) return;
+      store.set(v);
+      $('#key').value = '';
+      load();
+    });
+    $('#logout').addEventListener('click', () => { store.del(); data = null; showGate(''); });
+    $('#refresh').addEventListener('click', load);
+    document.querySelectorAll('[data-days]').forEach((b) => b.addEventListener('click', () => {
+      days = Number(b.dataset.days);
+      document.querySelectorAll('[data-days]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+      load();
+    }));
+    let resizeTimer;
+    window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (data) drawChart(allDays()); }, 150); });
+    load();
+  })();
+  </script>
+</body>
+</html>

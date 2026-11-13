@@ -16,3 +16,10 @@ DAILY_LIMIT_TOTAL = "100"
 # [[kv_namespaces]]
 # binding = "USAGE"
 # id = "PASTE_THE_KV_NAMESPACE_ID_HERE"
+
+# Usage statistics. Create once with:  npx wrangler d1 create aipill-stats
+# then paste the database_id below and uncomment. Password: npx wrangler secret put STATS_KEY
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "aipill-stats"
+# database_id = "PASTE_THE_DATABASE_ID_HERE"

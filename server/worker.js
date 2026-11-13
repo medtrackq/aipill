@@ -17,8 +17,19 @@
  * Privacy: nothing about the request content is stored or logged. The
  * device counter key is a salted hash, never the raw device id or IP.
  *
+ * Usage statistics (needs the D1 database bound as DB)
+ *   - POST /e    anonymous events sent by the app (opened, photo outcome,
+ *                search found / not found, drug page, ...): a hashed device
+ *                id, language, app or browser, country – never photos,
+ *                allergies, IP addresses or anything typed except the words
+ *                of a search that found nothing (to know which medicines to add)
+ *   - GET /stats summary for the dashboard (stats.html), only with
+ *                "Authorization: Bearer <STATS_KEY>"
+ *   Every AI request is also counted here (status only). Kept 400 days.
+ *
  * Variables (Settings → Variables and Secrets)
  *   ANTHROPIC_API_KEY       secret, required
+ *   STATS_KEY               secret, the dashboard password
  *   ALLOWED_ORIGINS         e.g. "https://app.medtrackq.com" (comma separated)
  *   MODELS                  default "claude-opus-5-5"
  *   DAILY_LIMIT_PER_DEVICE  default 20
@@ -33,9 +44,11 @@ const BETAS = new Set(['server-side-fallback-2026-07-01']);
 const EFFORTS = new Set(['low', 'medium']);
 const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const DAY_SECONDS = 86400;
+const EVENT_TYPES = new Set(['open', 'photo', 'search', 'drug', 'voice', 'ix', 'allergy', 'camera', 'compare', 'ai_name']);
+const KEEP_DAYS = 400;
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const origin = request.headers.get('Origin') || '';
     const allowed = list(env.ALLOWED_ORIGINS, 'https://app.medtrackq.com');
@@ -44,12 +57,14 @@ export default {
 
     if (request.method === 'OPTIONS') {
       if (!okOrigin) return new Response(null, { status: 403 });
-      cors.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      cors.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
       cors.set('Access-Control-Allow-Headers', request.headers.get('Access-Control-Request-Headers') || 'content-type');
       cors.set('Access-Control-Max-Age', String(DAY_SECONDS));
       return new Response(null, { status: 204, headers: cors });
     }
     if (request.method === 'GET' && url.pathname === '/') return json({ ok: true, service: 'aipill-proxy' }, 200, cors);
+    if (request.method === 'POST' && url.pathname === '/e') return collectEvent(request, env, ctx, okOrigin, cors);
+    if (request.method === 'GET' && url.pathname === '/stats') return stats(request, env, ctx, url, cors);
     if (request.method !== 'POST' || url.pathname !== '/v1/messages') return apiError(404, 'not_found_error', 'not found', cors);
     if (url.search && url.search !== '?beta=true') return apiError(400, 'invalid_request_error', 'unsupported query', cors);
     if (!okOrigin) return apiError(403, 'permission_error', 'origin not allowed', cors);
@@ -71,6 +86,7 @@ export default {
     // daily limits
     const over = await takeQuota(env, request);
     if (over) {
+      later(ctx, logEvent(env, { type: 'ai', k: `quota_${over}`, d: request.headers.get('x-aipill-device'), country: country(request) }));
       cors.set('x-should-retry', 'false');
       return apiError(429, 'rate_limit_error', `aipill_quota_${over}`, cors);
     }
@@ -81,8 +97,10 @@ export default {
     try {
       upstream = await fetch(`${UPSTREAM}/v1/messages${url.search}`, { method: 'POST', headers, body: raw });
     } catch (e) {
+      later(ctx, logEvent(env, { type: 'ai', k: 'unreachable', d: request.headers.get('x-aipill-device'), country: country(request) }));
       return apiError(502, 'api_error', 'upstream unreachable', cors);
     }
+    later(ctx, logEvent(env, { type: 'ai', k: String(upstream.status), d: request.headers.get('x-aipill-device'), country: country(request) }));
     const out = new Headers(cors);
     out.set('content-type', upstream.headers.get('content-type') || 'application/json');
     for (const h of ['request-id', 'retry-after', 'x-should-retry']) {
@@ -144,6 +162,88 @@ async function takeQuota(env, request) {
   const ttl = { expirationTtl: 2 * DAY_SECONDS };
   await Promise.all([env.USAGE.put(kAll, String(nAll + 1), ttl), env.USAGE.put(kDev, String(nDev + 1), ttl)]);
   return '';
+}
+
+// ---------------- usage statistics ----------------
+// Thai calendar day (UTC+7), so "today" matches the dashboard reader's day
+function dayOf(ms) { return new Date(ms + 7 * 3600 * 1000).toISOString().slice(0, 10); }
+function country(request) { return (request.cf && request.cf.country) || ''; }
+function later(ctx, promise) {
+  const p = Promise.resolve(promise).catch(() => {});
+  if (ctx && ctx.waitUntil) ctx.waitUntil(p);
+  return p;
+}
+let schemaReady = null;
+function ensureSchema(db) {
+  if (!schemaReady) {
+    schemaReady = db.batch([
+      db.prepare('CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, ts INTEGER, day TEXT, type TEXT, dev TEXT, lang TEXT, mode TEXT, country TEXT, k TEXT, v TEXT)'),
+      db.prepare('CREATE INDEX IF NOT EXISTS events_day ON events (day, type)')
+    ]).catch((e) => { schemaReady = null; throw e; });
+  }
+  return schemaReady;
+}
+const clip = (x, n) => String(x == null ? '' : x).replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, n);
+async function logEvent(env, e) {
+  if (!env.DB) return;
+  await ensureSchema(env.DB);
+  const now = Date.now();
+  const dev = e.d ? await hash(`${clip(e.d, 80)}|aipill`) : '';
+  await env.DB.prepare('INSERT INTO events (ts, day, type, dev, lang, mode, country, k, v) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .bind(now, dayOf(now), e.type, dev, clip(e.lang, 5), clip(e.mode, 5), clip(e.country, 4), clip(e.k, 40), clip(e.v, 60)).run();
+}
+async function collectEvent(request, env, ctx, okOrigin, cors) {
+  const done = new Response(null, { status: 204, headers: cors });
+  if (!okOrigin || !env.DB) return done;
+  const raw = await request.text();
+  if (raw.length > 2048) return done;
+  let e;
+  try { e = JSON.parse(raw); } catch (err) { return done; }
+  if (!e || !EVENT_TYPES.has(e.t)) return done;
+  later(ctx, logEvent(env, {
+    type: e.t, k: e.k, v: e.v, d: e.d, country: country(request),
+    lang: ['th', 'en', 'zh'].includes(e.l) ? e.l : '', mode: e.m === 'app' ? 'app' : 'web'
+  }));
+  return done;
+}
+async function stats(request, env, ctx, url, cors) {
+  const key = (request.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
+  if (!env.STATS_KEY) return apiError(503, 'api_error', 'stats not configured: add the STATS_KEY secret', cors);
+  if (!key || key !== env.STATS_KEY) return apiError(401, 'authentication_error', 'wrong password', cors);
+  if (!env.DB) return apiError(503, 'api_error', 'stats not configured: bind the D1 database as DB', cors);
+  await ensureSchema(env.DB);
+  const days = Math.min(Math.max(parseInt(url.searchParams.get('days'), 10) || 30, 1), 365);
+  const now = Date.now();
+  const since = dayOf(now - (days - 1) * DAY_SECONDS * 1000);
+  const q = (sql, ...args) => env.DB.prepare(sql).bind(...args).all().then((r) => r.results || []);
+  const [daily, newByDay, range, allTime, returning, features, photo, drugs, missed, modes, langs, countries, referrers, ai] = await Promise.all([
+    q(`SELECT day, COUNT(DISTINCT CASE WHEN type != 'ai' THEN dev END) AS people, SUM(type = 'open') AS opens, SUM(type = 'photo') AS photos,
+       SUM(type = 'search') AS searches, SUM(type = 'drug') AS drugs, SUM(type = 'ai' AND k = '200') AS ai
+       FROM events WHERE day >= ? GROUP BY day ORDER BY day`, since),
+    q(`SELECT first AS day, COUNT(*) AS n FROM (SELECT dev, MIN(day) AS first FROM events WHERE dev != '' AND type != 'ai' GROUP BY dev)
+       WHERE first >= ? GROUP BY first ORDER BY first`, since),
+    q(`SELECT COUNT(DISTINCT dev) AS people FROM events WHERE day >= ? AND dev != '' AND type != 'ai'`, since),
+    q(`SELECT COUNT(DISTINCT dev) AS people, MIN(day) AS since FROM events WHERE dev != '' AND type != 'ai'`),
+    q(`SELECT COUNT(*) AS n FROM (SELECT dev FROM events WHERE day >= ? AND dev != '' AND type != 'ai' GROUP BY dev HAVING COUNT(DISTINCT day) > 1)`, since),
+    q(`SELECT type AS k, COUNT(*) AS n, COUNT(DISTINCT dev) AS people FROM events WHERE day >= ? AND type != 'ai' GROUP BY type ORDER BY n DESC`, since),
+    q(`SELECT k, COUNT(*) AS n FROM events WHERE type = 'photo' AND day >= ? GROUP BY k ORDER BY n DESC`, since),
+    q(`SELECT k, COUNT(*) AS n FROM events WHERE type = 'drug' AND day >= ? GROUP BY k ORDER BY n DESC LIMIT 12`, since),
+    q(`SELECT v AS k, COUNT(*) AS n FROM events WHERE type = 'search' AND k = 'miss' AND v != '' AND day >= ? GROUP BY v ORDER BY n DESC LIMIT 20`, since),
+    q(`SELECT mode AS k, COUNT(DISTINCT dev) AS n FROM events WHERE type = 'open' AND day >= ? GROUP BY mode ORDER BY n DESC`, since),
+    q(`SELECT lang AS k, COUNT(DISTINCT dev) AS n FROM events WHERE type = 'open' AND day >= ? GROUP BY lang ORDER BY n DESC`, since),
+    q(`SELECT country AS k, COUNT(DISTINCT dev) AS n FROM events WHERE type = 'open' AND day >= ? GROUP BY country ORDER BY n DESC LIMIT 10`, since),
+    q(`SELECT k, COUNT(DISTINCT dev) AS n FROM events WHERE type = 'open' AND k != '' AND day >= ? GROUP BY k ORDER BY n DESC LIMIT 10`, since),
+    q(`SELECT k, COUNT(*) AS n FROM events WHERE type = 'ai' AND day >= ? GROUP BY k ORDER BY n DESC`, since)
+  ]);
+  later(ctx, env.DB.prepare('DELETE FROM events WHERE ts < ?').bind(now - KEEP_DAYS * DAY_SECONDS * 1000).run());
+  const out = new Headers(cors);
+  out.set('Cache-Control', 'no-store');
+  return json({
+    generated: new Date(now).toISOString(), today: dayOf(now), since, days,
+    people: (range[0] || {}).people || 0, returning: (returning[0] || {}).n || 0,
+    allTime: { people: (allTime[0] || {}).people || 0, since: (allTime[0] || {}).since || null },
+    daily, newByDay, features, photo, drugs, missed, modes, langs, countries, referrers, ai
+  }, 200, out);
 }
 
 async function hash(text) {

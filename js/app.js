@@ -34,6 +34,8 @@
     lowConfidence: 60,
     aiTimeoutMs: 60000
   };
+  // anonymous usage counts go to the same Worker (see track() and server/worker.js)
+  CONFIG.statsUrl = CONFIG.proxyUrl ? `${CONFIG.proxyUrl}/e` : '';
   // Text sizes as a multiple of the browser's own default font size, so a user
   // who already enlarged text in their browser keeps that enlargement
   // (at the common 16px default: 18 / 21 / 24 / 28px).
@@ -475,6 +477,7 @@
     state.allergies.push({ name, drugId: item.drugId || null, groupId: item.groupId || null });
     state.allergyNone = false;
     saveAllergies();
+    track('allergy', item.groupId ? 'group' : item.drugId ? 'drug' : 'typed');
     toast(t('allergyAdded'));
     return true;
   }
@@ -690,6 +693,16 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   // Map SDK errors (typed classes, most specific first) onto what the UI says.
   // AI works with a key typed on this device, or through the proxy
   function aiAvailable() { return !!(state.apiKey || CONFIG.proxyUrl); }
+  // Anonymous usage counts for the owner's dashboard (stats.html via the
+  // Worker's /e). Never photos, allergies, names or anything personal – the
+  // only free text is a search that found nothing, to know what to add.
+  function track(type, k = '', v = '') {
+    if (!CONFIG.statsUrl || !navigator.sendBeacon) return;
+    try {
+      const body = JSON.stringify({ t: type, k: String(k).slice(0, 40), v: String(v).slice(0, 60), d: deviceId(), l: state.lang, m: isAppMode() ? 'app' : 'web' });
+      navigator.sendBeacon(CONFIG.statsUrl, new Blob([body], { type: 'text/plain' }));
+    } catch (e) { /* statistics must never break the app */ }
+  }
   // a random id per browser, only used by the proxy to count today's requests
   function deviceId() {
     let id = store.get('deviceId', '');
@@ -933,6 +946,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
       }
       state.analysis = outcome.fail && !outcome.guess ? null
         : { ai, demo, photo: img.dataUrl, mode, dbId: outcome.dbId, guess: !!outcome.guess };
+      track('photo', demo ? 'demo' : outcome.fail || 'ok', outcome.fail ? '' : outcome.dbId || 'not_in_db');
       endAiJob(job);
       hideOverlay();
       if (outcome.fail) {
@@ -961,6 +975,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
       }, job.controller.signal));
       const outcome = resolveAnalysis(ai);
       state.analysis = { ai, demo: false, photo: null, mode: 'name', dbId: outcome.dbId, guess: !!outcome.guess };
+      track('ai_name', outcome.fail || (outcome.dbId ? 'db' : 'not_in_db'), outcome.fail ? q : outcome.dbId || '');
       endAiJob(job);
       hideOverlay();
       if (outcome.fail) {
@@ -1005,7 +1020,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   function camOpen() { return !camBox().hidden; }
   function openCamera() {
     const md = navigator.mediaDevices;
-    if (!window.isSecureContext || !md || !md.getUserMedia) { pickFile('#file-camera'); return; } // still inside the tap
+    if (!window.isSecureContext || !md || !md.getUserMedia) { track('camera', 'no_live_camera'); pickFile('#file-camera'); return; } // still inside the tap
     const box = camBox();
     camReturnFocus = document.activeElement;
     box.hidden = false;
@@ -1038,6 +1053,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
       .catch(() => {
         if (!camOpen()) return;
         stopCameraStream();
+        track('camera', 'refused');
         $('#cam-shutter').hidden = true;   // a dead shutter would only confuse
         $('#cam-msg').hidden = false;
         $('#cam-native').focus();
@@ -1120,6 +1136,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     let img;
     try { img = await prepareImage(file); } catch (e) { toast(t('errNotImage')); return; }
     if (p.mode === 'compare') {
+      track('compare');
       if (p.compareId === '__result' && state.analysis) state.analysis.photo = img.dataUrl;
       else state.comparePhoto[p.compareId] = img.dataUrl;
       render(false);
@@ -1154,7 +1171,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   const isAppMode = () => !!((window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone);
   function startVoice(btn, onText) {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { voiceProblem(t(isAppMode() ? 'voiceUnsupportedApp' : 'voiceUnsupported')); return; }
+    if (!SR) { track('voice', 'unsupported'); voiceProblem(t(isAppMode() ? 'voiceUnsupportedApp' : 'voiceUnsupported')); return; }
     if (recog) { recog.stop(); return; }
     const r = new SR();
     recog = r;
@@ -1179,10 +1196,11 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
       const alts = Array.from(e.results[0] || []).map((a) => a.transcript.trim()).filter(Boolean);
       // prefer the alternative that matches a medicine in the database
       const best = alts.find((a) => searchDrugs(a).matches.length) || alts[0];
-      if (best) { announce(t('heard', { q: best })); onText(best); }
+      if (best) { track('voice', 'ok'); announce(t('heard', { q: best })); onText(best); }
     };
     r.onerror = (e) => {
       const denied = e.error === 'not-allowed' || e.error === 'service-not-allowed';
+      track('voice', e.error || 'error');
       voiceProblem(t(denied ? (isAppMode() ? 'voiceDeniedApp' : 'voiceDenied') : 'voiceError'));
     };
     r.onend = () => {
@@ -1349,7 +1367,9 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   function submitSearch(q) {
     const query = String(q || '').trim();
     if ($('#search-results')) { updateSearchResults(query, true); return; }
-    const exact = exactDrug(searchDrugs(query).matches);
+    const { matches } = searchDrugs(query);
+    const exact = exactDrug(matches);
+    if (query) track('search', exact ? 'exact' : matches.length ? 'list' : 'miss', exact ? exact.id : matches.length ? '' : query);
     if (exact) go('#/drug/' + exact.id);
     else go('#/search' + (query ? '?q=' + encodeURIComponent(query) : ''));
   }
@@ -1435,6 +1455,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     // open a drug directly only for an exact name; partial or category matches
     // (e.g. "Atorvastatin" ⊃ "statin") must be chosen by the user
     const exact = exactDrug(matches);
+    if (submitted) track('search', exact ? 'exact' : matches.length ? 'list' : 'miss', exact ? exact.id : matches.length ? '' : query);
     if (submitted && exact) {
       go('#/drug/' + exact.id);
       return;
@@ -1570,6 +1591,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
       state.fallback = { reason: 'not_found', mode: 'name' };
       return renderNotFound();
     }
+    if (state.recent[0] !== id) track('drug', id);   // not again on a re-render of the same page
     state.recent = [id, ...state.recent.filter((x) => x !== id)].slice(0, 6);
     store.set('recent', state.recent);
     return renderDrugView({ kind: 'db', drug, ai: null, demo: false, photo: state.comparePhoto[id] || null, compareId: id });
@@ -2442,6 +2464,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
         break;
       case 'ix-check':
         if (state.ixList.length < 2) { toast(t('ixNeedTwo')); break; }
+        track('ix', String(state.ixList.length));
         state.ixResult = checkInteractions(state.ixList);
         state.ixAi = null;
         renderIxResults();
@@ -2470,6 +2493,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
         state.allergies = [];
         state.allergyNone = true;
         saveAllergies();
+        track('allergy', 'none');
         toast(t('saved'));
         if ($('#al-list')) renderAllergyList(); else render(false);
         break;
@@ -2511,7 +2535,8 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   navStack.push(currentHash());
   applyPrefs();
   render(false);
+  track('open', (() => { try { const r = new URL(document.referrer); return r.host !== location.host ? r.host : ''; } catch (e) { return ''; } })());
 
   // exposed for tests / debugging
-  window.AIPill = { searchDrugs, checkInteractions, parseExpiry, allergyConflicts, profileOfName, profileOfDrug, state, CONFIG };
+  window.AIPill = { searchDrugs, checkInteractions, parseExpiry, allergyConflicts, profileOfName, profileOfDrug, state, CONFIG, track };
 })();

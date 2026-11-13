@@ -567,6 +567,7 @@
     strength: str('strength such as "500 mg", "" if unknown'),
     appearance: str('physical appearance'),
     label_text: str('all text read from the label, bag, foil or imprint'),
+    name_seen: str('the medicine name exactly as printed and legible in the photo (label, box, blister foil, bag, or a word imprinted on the pill); "" when no medicine name can be read – a logo, an unreadable code, colour or shape are not a name'),
     indications: str('what it is used for'),
     usage: str('how to take it: label directions when visible, else the standard adult dose'),
     cautions: strList('things to be careful about (food, milk, alcohol, drowsiness, timing)'),
@@ -619,7 +620,7 @@ For a photo:
 4. Find the expiry date (EXP / วันหมดอายุ / ใช้ก่อน). Thai labels may use Buddhist Era years (2570 = 2027): convert to Gregorian. null if not visible.
 5. If the photo is unusable, set image_problem. If there is no medicine, set is_medicine to false.
 
-Identify the medicine. Never claim high confidence from colour or shape alone: different medicines can look identical. Lower confidence whenever the identity is uncertain.
+Identify a medicine from a photo ONLY by a name you can read in it: on the label, box, blister foil, bag, or a word imprinted on the pill. Many different medicines are identical white round tablets, and one maker's logo appears on many of its medicines, so shape, colour, size, score lines, logos and unreadable codes are never enough. When no medicine name is legible, set name_seen to "", leave generic_name, brand_name and db_id empty, set confidence to 20 or less, and describe the pill in appearance. Never guess a common medicine. Lower confidence whenever the identity is uncertain.
 Set db_id only when the medicine is exactly one of these database entries (same active ingredient), otherwise null:
 ${catalogForPrompt()}
 
@@ -631,7 +632,7 @@ The dose_* fields are shown in large print: copy them from the label directions 
 Write every human-readable value in ${aiLanguageName()}, in short simple sentences suitable for elderly readers. Use "" or [] when something is unknown.`;
   }
   function photoInstruction() {
-    return 'This photo may show pills, a blister pack, a bottle, a box or a hospital medicine bag. Read every printed word, the dosing directions and the expiry date, and look closely at the shape, colour, score line and imprint of any pills.';
+    return 'This photo may show pills, a blister pack, a bottle, a box or a hospital medicine bag. Read every printed word, the dosing directions and the expiry date. Put the medicine name you can actually read in name_seen; if none is legible, do not name the medicine.';
   }
   function nameInstruction(q) {
     return `I searched a medicine database for ${JSON.stringify(String(q).slice(0, 200))} and it was not found. If this is a real medicine (or an obvious misspelling of one) available in Thailand, describe it. If you are not sure which medicine it is, set is_medicine to false and leave the other fields empty. There is no photo: use image_problem "none", label_text "", pill_count null and expiry_date null.`;
@@ -789,6 +790,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
       strength: s(raw.strength).slice(0, 80),
       appearance: s(raw.appearance).slice(0, 400),
       label_text: s(raw.label_text).slice(0, 1500),
+      name_seen: s(raw.name_seen).slice(0, 200),
       indications: s(raw.indications).slice(0, 800),
       usage: s(raw.usage).slice(0, 800),
       cautions: arr(raw.cautions),
@@ -816,11 +818,28 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     exp.setFullYear(exp.getFullYear() + 1);
     return cleanAi({
       is_medicine: true, image_problem: 'none', db_id: 'paracetamol',
-      generic_name: 'Paracetamol', brand_name: 'Sara', strength: '500 mg',
+      generic_name: 'Paracetamol', brand_name: 'Sara', strength: '500 mg', name_seen: 'Sara 500',
       label_text: t('demoLabel'),
       pill_count: 10, expiry_date: `${exp.getFullYear()}-${pad2(exp.getMonth() + 1)}`,
       confidence: 95
     });
+  }
+
+  // every name a database medicine goes by on packs and labels
+  function drugNamesOf(d) {
+    return [d.generic.en, d.generic.th, d.generic.zh, ...(d.brands || []), ...(d.aliases || [])]
+      .flatMap((x) => String(x || '').split(/[()（）/,，]/));
+  }
+  // Safety rule: a photo identifies a medicine only when its name is printed
+  // and legible in it, and that name belongs to the medicine shown. Shape,
+  // colour, score lines and makers' logos are shared by many medicines, so a
+  // guess from them is never shown – not even as "AI's best guess".
+  function nameReadInPhoto(ai, dbId) {
+    if (!norm(ai.name_seen)) return false;
+    // not in the database: shown as unverified AI data, under the name it read
+    if (!dbId) return true;
+    const seen = norm(`${ai.name_seen} ${ai.label_text}`);
+    return drugNamesOf(drugById(dbId)).map((x) => norm(stripStrength(x))).filter((n) => n.length >= 3).some((n) => seen.includes(n));
   }
 
   // decide what to show after an analysis
@@ -905,8 +924,15 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
           schema: MEDICINE_SCHEMA
         }, job.controller.signal));
       }
-      const outcome = resolveAnalysis(ai);
-      state.analysis = { ai, demo, photo: img.dataUrl, mode, dbId: outcome.dbId, guess: !!outcome.guess };
+      let outcome = resolveAnalysis(ai);
+      if (!demo && ai.is_medicine && !nameReadInPhoto(ai, outcome.dbId)) {
+        // no legible name: never a result and never a guess; keep a photo problem as the reason
+        const photoProblem = ['blurry', 'too_dark', 'glare', 'too_far'].includes(outcome.fail);
+        const reason = norm(ai.name_seen) ? 'name_mismatch' : 'pill_only';   // a name was read, but not this medicine's
+        outcome = { fail: photoProblem ? outcome.fail : reason, dbId: null };
+      }
+      state.analysis = outcome.fail && !outcome.guess ? null
+        : { ai, demo, photo: img.dataUrl, mode, dbId: outcome.dbId, guess: !!outcome.guess };
       endAiJob(job);
       hideOverlay();
       if (outcome.fail) {
@@ -1887,7 +1913,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     } else if (vm.fromAi && vm.guess) {
       trust = `<div class="banner banner-warn" role="alert"><span class="ico">${icon('warn', 26)}</span><div>${esc(t('aiLowConfidence', { n: ai && ai.confidence !== null ? ai.confidence : '?' }))}<small>${esc(t('aiLowConfidenceSub'))}</small></div></div>`;
     } else if (vm.fromAi) {
-      trust = `<div class="banner banner-safe" role="note"><span class="ico">${icon('shield', 26)}</span><div>${esc(t('aiMatchedDb'))}${ai && ai.confidence !== null ? `<small>${esc(t('confidence', { n: ai.confidence }))}</small>` : ''}</div></div>`;
+      trust = `<div class="banner banner-safe" role="note"><span class="ico">${icon('shield', 26)}</span><div>${esc(t('aiMatchedDb', { name: (ai && (ai.name_seen || ai.generic_name || ai.brand_name)) || v.generic }))}${ai && ai.confidence !== null ? `<small>${esc(t('confidence', { n: ai.confidence }))}</small>` : ''}</div></div>`;
     }
 
     // big picture: real photo when available, otherwise the drawn pill(s)
@@ -2079,12 +2105,14 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     const guess = f.guess && state.analysis && (state.analysis.ai.generic_name || state.analysis.ai.brand_name);
     app.innerHTML = `
       ${screenHead(t('nfTitle'))}
-      <div class="banner banner-warn" role="alert"><span class="ico">${icon('warn')}</span><div>${esc(t('nfReason', { r: issues[f.reason] || issues.not_found }))}</div></div>
+      ${f.reason === 'pill_only'
+        ? `<div class="banner banner-warn" role="alert"><span class="ico">${icon('warn')}</span><div>${esc(t('pillOnlyTitle'))}<small>${esc(t('pillOnlySub'))}</small></div></div>`
+        : `<div class="banner banner-warn" role="alert"><span class="ico">${icon('warn')}</span><div>${esc(t('nfReason', { r: issues[f.reason] || issues.not_found }))}</div></div>`}
       ${guess ? `<section class="card"><p><strong>${esc(t('aiGuess', { name: guess }))}</strong></p>
         <a class="btn btn-secondary btn-block" href="#/result">${icon('sparkle')}<span>${esc(t('viewAnyway'))}</span></a></section>` : ''}
       <section class="card">
         <h2>${esc(t('nfSub'))}</h2>
-        <ul class="tips">${t('tips').map((x, i) => `<li><span class="ico" aria-hidden="true">${['💡', '📄', '🔍', '✋'][i] || '•'}</span><span>${esc(x)}</span></li>`).join('')}</ul>
+        <ul class="tips">${t('tips').map((x, i) => `<li><span class="ico" aria-hidden="true">${['📄', '💡', '🔍', '✋'][i] || '•'}</span><span>${esc(x)}</span></li>`).join('')}</ul>
         ${fallbackActions({ photo: f.mode !== 'name', photoLabel: t('retake') })}
       </section>`;
     return t('nfTitle');

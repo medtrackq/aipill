@@ -17,6 +17,11 @@
     // Claude model and effort. Opus 5.5 reads labels most accurately; "low"
     // effort keeps answers fast (raise to "medium" for harder photos).
     defaultModel: 'claude-opus-5-5',
+    // The Claude proxy (server/worker.js) holding the API key: AI works for
+    // everybody without a key; a key typed in Settings still wins. The proxy
+    // only answers the app's own address (its ALLOWED_ORIGINS), so copies
+    // served from anywhere else (localhost, forks) stay in demo mode.
+    proxyUrl: location.origin === 'https://app.medtrackq.com' ? 'https://aipill-proxy.pratumsiri.workers.dev' : '',
     effort: 'low',
     // vendored official SDK, resolved relative to this script
     sdkUrl: new URL('../vendor/anthropic-sdk-1.3.0.min.mjs', SCRIPT_URL).href,
@@ -608,7 +613,7 @@
 The input may be a photo of loose pills, a blister pack, a bottle, a box, or a hospital/clinic medicine bag (often a clear zip-lock bag with a printed label), or a medicine name the user typed.
 
 For a photo:
-1. Read ALL visible text (label, bag, blister foil, imprint), including text seen through clear plastic, into label_text.
+1. Read ALL visible text (label, bag, blister foil, imprint), including text seen through clear plastic, into label_text. Leave out any patient's name, hospital number (HN), ID card number, address or phone number: never copy them into any field.
 2. Describe the physical appearance.
 3. Count the pills or capsules that are clearly visible; null if counting is not possible.
 4. Find the expiry date (EXP / วันหมดอายุ / ใช้ก่อน). Thai labels may use Buddhist Era years (2570 = 2027): convert to Gregorian. null if not visible.
@@ -682,10 +687,23 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   }
 
   // Map SDK errors (typed classes, most specific first) onto what the UI says.
+  // AI works with a key typed on this device, or through the proxy
+  function aiAvailable() { return !!(state.apiKey || CONFIG.proxyUrl); }
+  // a random id per browser, only used by the proxy to count today's requests
+  function deviceId() {
+    let id = store.get('deviceId', '');
+    if (!id) {
+      id = window.crypto && crypto.randomUUID ? crypto.randomUUID() : `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+      store.set('deviceId', id);
+    }
+    return id;
+  }
   function classifySdkError(Anthropic, e) {
     if (e instanceof Anthropic.APIUserAbortError) { const x = new Error('aborted'); x.name = 'AbortError'; return x; }
     if (e instanceof Anthropic.APIConnectionTimeoutError) { const x = new Error('timeout'); x.name = 'AbortError'; x.timeout = true; return x; }
     if (e instanceof Anthropic.AuthenticationError || e instanceof Anthropic.PermissionDeniedError) { e.keyProblem = true; return e; }
+    // the proxy's daily limit (see server/worker.js) – not a "busy, try again"
+    if (e instanceof Anthropic.RateLimitError && /aipill_quota_/.test(`${e.message} ${JSON.stringify(e.error || '')}`)) { e.quota = true; return e; }
     if (e instanceof Anthropic.RateLimitError || e instanceof Anthropic.InternalServerError) { e.busy = true; return e; } // 429, 5xx, 529 overloaded
     if (e instanceof Anthropic.APIConnectionError) { e.network = true; return e; } // subclass of APIError: check first
     return e;
@@ -698,9 +716,17 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   async function claudeJson({ system, content, schema }, signal) {
     const Anthropic = await loadSdk();
     const model = (state.model || CONFIG.defaultModel).trim();
-    const client = new Anthropic({
+    const own = !!state.apiKey;   // a key typed on this device wins over the proxy
+    const client = new Anthropic(own ? {
       apiKey: state.apiKey,
-      dangerouslyAllowBrowser: true, // the user's own key, entered on this device (README: use a backend in production)
+      dangerouslyAllowBrowser: true, // the user's own key, entered on this device
+      maxRetries: 1,
+      timeout: CONFIG.aiTimeoutMs
+    } : {
+      apiKey: 'proxy',               // the real key is a secret on the proxy
+      baseURL: CONFIG.proxyUrl.replace(/\/+$/, ''),
+      defaultHeaders: { 'x-aipill-device': deviceId() },   // for the per-device daily limit
+      dangerouslyAllowBrowser: true,
       maxRetries: 1,
       timeout: CONFIG.aiTimeoutMs
     });
@@ -716,7 +742,9 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     try {
       response = await client.beta.messages.create(params, { signal });
     } catch (e) {
-      throw classifySdkError(Anthropic, e);
+      const err = classifySdkError(Anthropic, e);
+      if (!own) err.viaProxy = true;
+      throw err;
     }
     if (response.stop_reason === 'refusal') { const e = new Error('refusal'); e.blocked = true; throw e; }
     if (response.stop_reason === 'max_tokens') throw invalidAiError();
@@ -777,7 +805,8 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   function aiErrorMessage(err) {
     if (err && err.blocked) return t('errBlocked');
     if (err && err.network) return t('errNetwork');
-    if (err && err.keyProblem) return t('errKey');
+    if (err && err.quota) return t('errQuota');
+    if (err && err.keyProblem) return t(err.viaProxy ? 'errProxy' : 'errKey');
     if (err && err.busy) return t('errBusy');
     return t('errGeneric', { msg: (err && err.message) || '?' });
   }
@@ -826,7 +855,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     const timedOut = job.timedOut || (err && err.timeout);
     if (err && err.name === 'AbortError' && !timedOut) return; // cancelled by the user or by navigation
     if (!timedOut) console.error(err);
-    showAiError(timedOut ? t('errTimeout') : aiErrorMessage(err), retry, { settings: !!(err && err.keyProblem) });
+    showAiError(timedOut ? t('errTimeout') : aiErrorMessage(err), retry, { settings: !!(err && err.keyProblem && !err.viaProxy) });
   }
 
   function showAiError(message, retry, { settings = false } = {}) {
@@ -861,7 +890,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     showOverlay(t('analyzing'), t('analyzingSub'));
     try {
       let ai, demo = false;
-      if (!state.apiKey) {
+      if (!aiAvailable()) {
         await sleep(1200);
         if (job.controller.signal.aborted) return;
         ai = demoAnalysis(mode);
@@ -895,7 +924,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   }
 
   async function askAiByName(q) {
-    if (!state.apiKey) { openSettings(); return; }
+    if (!aiAvailable()) { openSettings(); return; }
     const job = beginAiJob();
     showOverlay(t('searchingAi'), t('analyzingSub'));
     try {
@@ -1265,7 +1294,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   const IX_ART = `<svg viewBox="0 0 96 52" aria-hidden="true" focusable="false"><circle cx="22" cy="26" r="18" fill="#F3A3BF" stroke="#0E1B17" stroke-width="2"/><circle cx="74" cy="26" r="14" fill="#FFFFFF" stroke="#0E1B17" stroke-width="2"/><path d="M50 8 L42 28 H50 L45 44 L58 22 H50 L55 8 Z" fill="#E9785F" stroke="#0E1B17" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
   const HELP_ART = `<svg viewBox="0 0 96 52" aria-hidden="true" focusable="false"><path d="M8 10 a8 8 0 0 1 8 -8 h44 a8 8 0 0 1 8 8 v22 a8 8 0 0 1 -8 8 h-30 l-12 10 v-10 h-2 a8 8 0 0 1 -8 -8 Z" fill="#DCEBFA" stroke="#0E1B17" stroke-width="2" stroke-linejoin="round"/><rect x="33" y="10" width="10" height="24" rx="2" fill="#047857"/><rect x="26" y="17" width="24" height="10" rx="2" fill="#047857"/><circle cx="82" cy="36" r="12" fill="#FFE7A8" stroke="#0E1B17" stroke-width="2"/><path d="M77 36 l3 3 l6 -7" stroke="#0E1B17" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   function demoNotice() {
-    if (state.apiKey) return '';
+    if (aiAvailable()) return '';
     return `<div class="pill-notice" role="note"><span>${esc(t('demoShortNotice'))}</span>
       <button type="button" class="btn btn-secondary btn-sm" data-action="settings">${esc(t('demoSetup'))}</button></div>`;
   }
@@ -1395,7 +1424,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     }
     html += `<section class="card"><ul class="tips">${t('noResultTips').map((x, i) => `<li><span class="ico" aria-hidden="true">${['🔤', '💊', '📷'][i] || '•'}</span><span>${esc(x)}</span></li>`).join('')}</ul>
       <div class="stack">
-        ${state.apiKey
+        ${aiAvailable()
           ? `<button type="button" class="btn btn-primary btn-block" data-action="ask-ai" data-q="${esc(query)}">${icon('sparkle')}<span>${esc(t('askAi', { q: query }))}</span></button>`
           : `<p class="help">${esc(t('askAiNeedKey'))}</p>`}
         ${fallbackActions({ photo: true, photoLabel: t('photoInstead'), typeName: false })}
@@ -2193,7 +2222,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     }
     if (r.unknown.length) {
       html += `<div class="banner banner-warn"><span class="ico">${icon('warn')}</span><div>${esc(t('ixUnknownNote', { list: r.unknown.map((x) => x.name).join(', ') }))}</div></div>`;
-      html += state.apiKey
+      html += aiAvailable()
         ? `<button type="button" class="btn btn-secondary btn-block" data-action="ix-ai">${icon('sparkle')}<span>${esc(t('ixAskAi'))}</span></button>`
         : `<p class="help">${esc(t('askAiNeedKey'))}</p>`;
     }
@@ -2213,7 +2242,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
   }
 
   async function runIxAi() {
-    if (!state.apiKey) { openSettings(); return; }
+    if (!aiAvailable()) { openSettings(); return; }
     const job = beginAiJob();
     showOverlay(t('searchingAi'), t('analyzingSub'));
     try {
@@ -2258,6 +2287,7 @@ Write every human-readable value in ${aiLanguageName()}, in short simple sentenc
     else dlg.removeAttribute('open');
   }
   function openSettings() {
+    $('#proxy-note').hidden = !CONFIG.proxyUrl;
     $('#api-key').value = state.apiKey;
     $('#api-model').value = state.model || CONFIG.defaultModel;
     openDialog($('#dlg-settings'));

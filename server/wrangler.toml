@@ -1,0 +1,18 @@
+# Cloudflare Worker: the Claude proxy for AI Pill (see README.md in this folder)
+# Deploy from this folder:  npx wrangler deploy
+# Set the key (never put it in this file):  npx wrangler secret put ANTHROPIC_API_KEY
+name = "aipill-proxy"
+main = "worker.js"
+compatibility_date = "2026-11-01"
+
+[vars]
+ALLOWED_ORIGINS = "https://app.medtrackq.com"
+MODELS = "claude-opus-5-5"
+DAILY_LIMIT_PER_DEVICE = "20"
+DAILY_LIMIT_TOTAL = "100"
+
+# Daily counters. Create once with:  npx wrangler kv namespace create USAGE
+# then paste the id it prints below and uncomment the block.
+# [[kv_namespaces]]
+# binding = "USAGE"
+# id = "PASTE_THE_KV_NAMESPACE_ID_HERE"

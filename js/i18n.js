@@ -16,8 +16,10 @@
       language: 'ภาษา',
       settings: 'ตั้งค่า',
       close: 'ปิด',
-      camTitle: 'วางยาให้อยู่ในกรอบ',
-      camSub: 'ถือให้นิ่ง ในที่สว่าง ไม่ให้มีแสงสะท้อน',
+      camTitle: 'ถ่ายให้เห็นชื่อยาในกรอบ',
+      pillOnlyTitle: 'ดูจากเม็ดยาอย่างเดียว บอกไม่ได้ว่าเป็นยาอะไร',
+      pillOnlySub: 'ยาหลายชนิดเป็นเม็ดสีขาวกลมเหมือนกัน และโลโก้บนเม็ดเป็นของบริษัทผู้ผลิต ไม่ใช่ชื่อยา แอปจึงไม่เดา เพื่อความปลอดภัย ต้องเห็นชื่อยาในภาพ',
+      camSub: 'แผงยา: พลิกด้านที่พิมพ์ชื่อ · ถือห่างประมาณ 1 คืบ',
       camNote: 'ซองยาโรงพยาบาล ให้ถ่ายด้านที่ไม่มีชื่อผู้ป่วย',
       camShutter: 'ถ่ายรูป',
       camGallery: 'คลังภาพ',
@@ -199,7 +201,7 @@
       year: 'ปี',
       beSuffix: 'พ.ศ.',
       confidence: 'ความมั่นใจของ AI: {n}%',
-      aiMatchedDb: 'AI ระบุว่าเป็นยานี้ และพบข้อมูลในฐานข้อมูล',
+      aiMatchedDb: 'อ่านชื่อยาในภาพได้ว่า “{name}” และพบข้อมูลในฐานข้อมูล',
 
       nfTitle: 'ยังระบุยาไม่ได้',
       nfSub: 'ไม่ต้องกังวล ลองวิธีเหล่านี้',
@@ -211,12 +213,14 @@
         too_far: 'ยาอยู่ไกลเกินไป',
         not_medicine: 'ไม่พบยาในภาพ',
         low_confidence: 'AI ไม่มั่นใจในผลลัพธ์',
-        not_found: 'ไม่พบข้อมูลยานี้'
+        not_found: 'ไม่พบข้อมูลยานี้',
+        pill_only: 'ในภาพไม่มีชื่อยา',
+        name_mismatch: 'ชื่อยาที่อ่านได้ ไม่ตรงกับยาที่ AI ระบุ จึงยังยืนยันไม่ได้'
       },
       tips: [
-        'ถ่ายใหม่ในที่มีแสงสว่าง และปิดแฟลชเพื่อลดแสงสะท้อน',
-        'วางยาบนพื้นเรียบที่มีสีตัดกับเม็ดยา',
-        'ถ่ายใกล้ ๆ ให้เห็นตัวอักษรบนเม็ดยาหรือฉลากชัดเจน',
+        'ถ่ายด้านที่พิมพ์ชื่อยา: ด้านหลังของแผงยา กล่อง หรือฉลาก',
+        'ถ่ายในที่สว่าง ปิดแฟลช และเอียงเล็กน้อยไม่ให้แสงสะท้อน',
+        'ถือห่างประมาณ 1 คืบ รอให้ภาพชัดก่อนกดถ่าย',
         'ถือโทรศัพท์ให้นิ่ง หรือวางศอกบนโต๊ะ'
       ],
       retake: 'ถ่ายใหม่',
@@ -291,8 +295,10 @@
       language: 'Language',
       settings: 'Settings',
       close: 'Close',
-      camTitle: 'Fit the medicine inside the frame',
-      camSub: 'Hold still, in good light, avoid glare',
+      camTitle: 'Get the medicine name inside the frame',
+      pillOnlyTitle: 'A pill alone cannot tell which medicine it is',
+      pillOnlySub: 'Many medicines are identical white round tablets, and the logo on a pill is the maker’s, not the medicine’s name. For your safety the app does not guess: the medicine name must be in the photo.',
+      camSub: 'Blister pack: turn to the printed side · hold about 20 cm away',
       camNote: 'Hospital medicine bag: photograph the side without the patient’s name',
       camShutter: 'Take photo',
       camGallery: 'Gallery',
@@ -473,7 +479,7 @@
       year: 'Year',
       beSuffix: 'BE',
       confidence: 'AI confidence: {n}%',
-      aiMatchedDb: 'AI identified this medicine and it was found in the database',
+      aiMatchedDb: 'Read “{name}” in the photo and found it in the database',
 
       nfTitle: 'We could not identify it yet',
       nfSub: 'Don’t worry – try one of these',
@@ -485,12 +491,14 @@
         too_far: 'The medicine is too far away',
         not_medicine: 'No medicine found in the photo',
         low_confidence: 'The AI is not confident about the result',
-        not_found: 'No information found for this medicine'
+        not_found: 'No information found for this medicine',
+        pill_only: 'no medicine name in the photo',
+        name_mismatch: 'the name read in the photo does not match the medicine the AI named, so it cannot be confirmed'
       },
       tips: [
-        'Retake the photo in good light, with the flash off to avoid glare',
-        'Place the medicine on a plain surface with a contrasting colour',
-        'Move closer so the markings or label text are sharp',
+        'Photograph the side with the printed medicine name: the back of the blister pack, the box or the label',
+        'Use good light, flash off, and tilt slightly to avoid glare',
+        'Hold the phone about 20 cm away and wait until the picture is sharp',
         'Hold the phone steady, or rest your elbows on a table'
       ],
       retake: 'Retake photo',
@@ -565,8 +573,10 @@
       language: '语言',
       settings: '设置',
       close: '关闭',
-      camTitle: '把药放在框内',
-      camSub: '保持稳定，光线充足，避免反光',
+      camTitle: '让药名位于框内',
+      pillOnlyTitle: '仅凭药片无法判断是什么药',
+      pillOnlySub: '许多药都是一样的白色圆形药片，药片上的标志是厂商的，不是药名。为安全起见，应用不会猜测：照片中必须有药名。',
+      camSub: '药板：翻到印有药名的一面 · 距离约20厘米',
       camNote: '医院药袋：请拍摄没有患者姓名的一面',
       camShutter: '拍照',
       camGallery: '相册',
@@ -747,7 +757,7 @@
       year: '年',
       beSuffix: '佛历',
       confidence: 'AI 置信度：{n}%',
-      aiMatchedDb: 'AI 识别出此药，并在数据库中找到资料',
+      aiMatchedDb: '在照片中读到“{name}”，并在数据库中找到',
 
       nfTitle: '暂时无法识别',
       nfSub: '别担心，试试以下方法',
@@ -759,12 +769,14 @@
         too_far: '药品离得太远',
         not_medicine: '照片中没有找到药品',
         low_confidence: 'AI 对结果不确定',
-        not_found: '未找到此药的资料'
+        not_found: '未找到此药的资料',
+        pill_only: '照片中没有药名',
+        name_mismatch: '照片中读到的药名与 AI 判断的药不符，因此无法确认'
       },
       tips: [
-        '在光线充足处重拍，并关闭闪光灯以减少反光',
-        '将药放在颜色对比明显的平整表面上',
-        '靠近拍摄，让刻字或标签文字清晰可见',
+        '拍摄印有药名的一面：药板背面、药盒或标签',
+        '在光线充足处拍摄，关闭闪光灯，稍微倾斜以避免反光',
+        '手机距离约20厘米，等画面清晰后再拍',
         '拿稳手机，或把手肘靠在桌上'
       ],
       retake: '重新拍摄',
